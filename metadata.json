@@ -1,0 +1,6 @@
+{
+  "name": "Earth Uncovered",
+  "description": "Browser-based 3D geographic exploration and spatial reconstruction platform with Gaussian Splat rendering, quadtree world streaming, WGS84/ECEF/ENU coordinates, and geodesic location guessing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
