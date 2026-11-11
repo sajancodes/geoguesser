@@ -5,6 +5,7 @@ import {
   ALL_WORLD_COUNTRIES,
   createLocationFromCountry,
 } from '../coverage/worldCountries';
+import { generateMathematicalNonRepeatingPlace } from './mathRandomSampler';
 
 export const MAX_ROUND_SCORE = 5000;
 export const DEFAULT_GLOBAL_DIFFICULTY_K_KM = 2000;
@@ -72,7 +73,9 @@ export function evaluateGuessAgainstLocation(
 }
 
 /**
- * Select a fair, non-repeating eligible location using a deterministic seed or history filter.
+ * Select a fair, non-repeating eligible location using continuous mathematical sampling
+ * (2D Weyl low-discrepancy sequences + CSPRNG + cross-session geodesic maximin deduplication)
+ * or a deterministic seed for Duel Seed mode.
  */
 export function selectFairPlayableLocation(
   recentLocationIds: string[],
@@ -80,7 +83,7 @@ export function selectFairPlayableLocation(
   seedCode?: string | null,
   cityNameFilter?: string | null
 ): LocationCoverageRecord {
-  const eligible = getEligiblePlayableLocations(countryCodeFilter ?? null, cityNameFilter ?? null);
+  let eligible = getEligiblePlayableLocations(countryCodeFilter ?? null, cityNameFilter ?? null);
   if (eligible.length === 0) {
     if (countryCodeFilter && countryCodeFilter.trim().length > 0) {
       const q = countryCodeFilter.trim().toLowerCase();
@@ -88,22 +91,24 @@ export function selectFairPlayableLocation(
         (c) => c.code.toLowerCase() === q || c.name.toLowerCase() === q
       );
       if (match) {
-        return createLocationFromCountry(match);
+        eligible = [createLocationFromCountry(match)];
       }
     }
-    if (cityNameFilter && cityNameFilter.trim().length > 0) {
+    if (eligible.length === 0 && cityNameFilter && cityNameFilter.trim().length > 0) {
       const q = cityNameFilter.trim().toLowerCase();
       const match = ALL_WORLD_COUNTRIES.find(
         (c) => c.cityName.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
       );
       if (match) {
-        return createLocationFromCountry(match);
+        eligible = [createLocationFromCountry(match)];
       }
     }
-    const fallback = getEligiblePlayableLocations(null, null);
-    return fallback[0];
+    if (eligible.length === 0) {
+      eligible = getEligiblePlayableLocations(null, null);
+    }
   }
 
+  // Deterministic seed mode for competitive Duel Seed matching
   if (seedCode && seedCode.trim().length > 0) {
     let hash = 2166136261 >>> 0;
     const cleanSeed = seedCode.trim().toUpperCase();
@@ -114,29 +119,8 @@ export function selectFairPlayableLocation(
     return eligible[(hash >>> 0) % eligible.length];
   }
 
-  const unvisited = eligible.filter((loc) => !recentLocationIds.includes(loc.locationId));
-  if (unvisited.length > 0) {
-    const index = Math.floor(Math.random() * unvisited.length);
-    return unvisited[index];
-  }
+  const unvisitedTemplates = eligible.filter((loc) => !recentLocationIds.includes(loc.locationId));
+  const basePool = unvisitedTemplates.length > 0 ? unvisitedTemplates : eligible;
 
-  // If all predefined sectors in this country/city were already visited in this session,
-  // generate a fresh outdoor sector within the same country/city so Next Place never repeats or leaves the country
-  const base = eligible[Math.floor(Math.random() * eligible.length)];
-  const latOffset = (Math.random() - 0.5) * 0.035;
-  const lonOffset = (Math.random() - 0.5) * 0.035;
-  const newYaw = Math.floor(Math.random() * 360);
-  return {
-    ...base,
-    locationId: `${base.locationId}-place-${recentLocationIds.length + 1}`,
-    originWGS84: {
-      lat: Number((base.originWGS84.lat + latOffset).toFixed(5)),
-      lon: Number((base.originWGS84.lon + lonOffset).toFixed(5)),
-      elevation: base.originWGS84.elevation,
-    },
-    spawnPointENU: {
-      ...base.spawnPointENU,
-      yawDeg: newYaw,
-    },
-  };
+  return generateMathematicalNonRepeatingPlace(basePool, countryCodeFilter, cityNameFilter);
 }

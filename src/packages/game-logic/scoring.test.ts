@@ -35,6 +35,22 @@ test('CoverageEligibilityService excludes incomplete locations from playable sel
   // City filter selects locations within that specific city
   const parisLoc = selectFairPlayableLocation([], null, null, 'Paris');
   assert.equal(parisLoc.cityName, 'Paris');
+
+  // Verify 250 consecutive brand-new session calls (recentLocationIds = []) produce < 1% repeat rate
+  const seenCoords = new Set<string>();
+  let repeatCount = 0;
+  for (let i = 0; i < 250; i++) {
+    const sample = selectFairPlayableLocation([], 'NP', null, null);
+    const key = `${sample.originWGS84.lat.toFixed(4)},${sample.originWGS84.lon.toFixed(4)}`;
+    if (seenCoords.has(key)) {
+      repeatCount++;
+    }
+    seenCoords.add(key);
+  }
+  assert.ok(
+    repeatCount / 250 < 0.01,
+    `Expected < 1% repeat rate over 250 samples, got ${repeatCount}/250`
+  );
 });
 
 test('stepCapsulePhysics prevents walking through buildings and locks movement in No Movement mode', () => {

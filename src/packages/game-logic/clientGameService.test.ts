@@ -74,4 +74,24 @@ test('Serverless clientGameService handles arbitrary 200+ world countries and st
     assert.equal(recentIds.includes(res.locationId), false);
     recentIds.push(res.locationId);
   }
+
+  // Verify consecutive brand-new sessions (recentLocationIds: []) have 0% repeat rate
+  const coordSet = new Set<string>();
+  let repeats = 0;
+  const totalSamples = 15;
+  for (let s = 0; s < totalSamples; s++) {
+    const newSession = createGameSession({
+      countryFilter: 'NP',
+      mode: 'classic',
+      roundNumber: 1,
+      recentLocationIds: [], // Simulate a brand-new session every time!
+    });
+    const target = newSession.sceneBootstrap.streetViewTarget;
+    const key = `${target.lat.toFixed(4)},${target.lon.toFixed(4)}`;
+    if (coordSet.has(key)) {
+      repeats++;
+    }
+    coordSet.add(key);
+  }
+  assert.equal(repeats, 0);
 });

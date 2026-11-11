@@ -37,7 +37,14 @@ import {
   wgs84ToEnu,
 } from '../geographic-index/coordinates';
 import { ProceduralAudioSynth } from './soundSynth';
-import { getInMemoryChunkBuffer } from '../game-logic/clientGameService';
+import {
+  getInMemoryChunkBuffer,
+  updateActiveSessionActualLocation,
+} from '../game-logic/clientGameService';
+import {
+  isPanoVisited,
+  markPanoVisited,
+} from '../game-logic/mathRandomSampler';
 import {
   buildCompositeBuildingGroup,
   buildRoadNetworkGroup,
@@ -549,8 +556,8 @@ export class WorldEngineController {
     });
 
     let outdoorData: GoogleStreetViewPanoramaData | null = null;
-    // Strictly search OUTDOOR street view only (never inside buildings)
-    for (const searchRadius of [300, 1000, 3000, 8000]) {
+    // Strictly search OUTDOOR street view only (never inside buildings) across progressive radii
+    for (const searchRadius of [400, 1500, 6000, 20000, 45000]) {
       try {
         const res = await this.streetViewService.getPanorama({
           location: { lat: target.lat, lng: target.lon },
@@ -567,17 +574,49 @@ export class WorldEngineController {
       }
     }
 
+    // If the resolved panorama was already visited in this or any prior session,
+    // step along a mathematical Golden-Angle spiral (137.508 deg) to find a fresh outdoor panorama
+    if (outdoorData?.location?.pano && isPanoVisited(outdoorData.location.pano)) {
+      const goldenAngleRad = (137.507764 * Math.PI) / 180;
+      const cosLat = Math.max(0.2, Math.cos((target.lat * Math.PI) / 180));
+      for (let step = 1; step <= 6; step++) {
+        const radiusKm = 3.5 + step * 5.5;
+        const angle = step * goldenAngleRad + Math.random() * 0.5;
+        const probeLat = target.lat + (radiusKm * Math.cos(angle)) / 111.32;
+        const probeLon = target.lon + (radiusKm * Math.sin(angle)) / (111.32 * cosLat);
+        try {
+          const probeRes = await this.streetViewService.getPanorama({
+            location: { lat: probeLat, lng: probeLon },
+            radius: 12000,
+            preference: this.streetViewLib.StreetViewPreference.NEAREST,
+            source: this.streetViewLib.StreetViewSource.OUTDOOR,
+          });
+          const probePano = probeRes?.data?.location?.pano;
+          if (probePano && !isPanoVisited(probePano)) {
+            outdoorData = probeRes.data;
+            break;
+          }
+        } catch {
+          // continue spiral probe
+        }
+      }
+    }
+
     if (this.isDisposed) return;
 
     if (outdoorData?.location?.pano) {
       this.currentPanoId = outdoorData.location.pano;
+      markPanoVisited(outdoorData.location.pano);
       if (outdoorData.location.latLng) {
+        const resolvedLat = outdoorData.location.latLng.lat();
+        const resolvedLon = outdoorData.location.latLng.lng();
         this.spawnOriginWGS84 = {
-          lat: outdoorData.location.latLng.lat(),
-          lon: outdoorData.location.latLng.lng(),
+          lat: resolvedLat,
+          lon: resolvedLon,
           elevation: target.elevation,
         };
         this.currentRealWGS84 = { ...this.spawnOriginWGS84 };
+        updateActiveSessionActualLocation(resolvedLat, resolvedLon);
       }
 
       let alignedHeading = target.headingDeg;

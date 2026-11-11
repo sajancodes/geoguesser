@@ -71,6 +71,29 @@ export function getLatestActiveLocation(): LocationCoverageRecord | null {
 }
 
 /**
+ * Updates the active session's ground-truth WGS84 coordinate when Street View resolves
+ * an exact outdoor panorama near the mathematically sampled point.
+ */
+export function updateActiveSessionActualLocation(lat: number, lon: number): void {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (latestActiveLocation) {
+    latestActiveLocation = {
+      ...latestActiveLocation,
+      originWGS84: {
+        ...latestActiveLocation.originWGS84,
+        lat: Number(lat.toFixed(5)),
+        lon: Number(lon.toFixed(5)),
+      },
+    };
+  }
+  for (const session of Object.values(activeSessions)) {
+    if (latestActiveLocation && session.location.locationId === latestActiveLocation.locationId) {
+      session.location = latestActiveLocation;
+    }
+  }
+}
+
+/**
  * Serverless in-browser Coverage Registry
  */
 export function getCoverageRegistry(): {
