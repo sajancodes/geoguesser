@@ -75,7 +75,7 @@ export function selectFairPlayableLocation(
   countryCodeFilter?: string | null,
   seedCode?: string | null
 ): LocationCoverageRecord {
-  const eligible = getEligiblePlayableLocations(countryCodeFilter);
+  const eligible = getEligiblePlayableLocations(countryCodeFilter ?? null);
   if (eligible.length === 0) {
     const fallback = getEligiblePlayableLocations(null);
     return fallback[0];
