@@ -85,148 +85,54 @@ export const GameplayHudOverlay: React.FC<GameplayHudOverlayProps> = ({
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 sm:p-4">
-      {/* Top Bar: Left Telemetry Cluster + Right Utility Controls */}
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        {/* Top-Left Compact Status & Streaming Telemetry Cluster */}
-        <div className="pointer-events-auto border border-[#262a30] bg-[#111315] px-3.5 py-2 rounded-[4px] flex flex-col gap-1.5 max-w-xl">
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <span className="font-semibold text-[#0284c7]">
-              {MODE_LABELS[roundState.mode]}
-            </span>
-            <span className="text-[#262a30]">|</span>
-            <span className="font-mono tabular-nums text-[#f3f4f6]">
-              ROUND {roundState.roundNumber}/{roundState.totalRounds}
-            </span>
-            <span className="text-[#262a30]">|</span>
-            <span className="font-mono tabular-nums text-[#f3f4f6]">
-              SCORE {cumulativeScore.toLocaleString()}
-            </span>
-            {remainingSeconds !== null && (
-              <>
-                <span className="text-[#262a30]">|</span>
-                <span className="flex items-center gap-1.5 font-mono tabular-nums text-[#f3f4f6]">
-                  <span
-                    className={`inline-block w-2 h-2 rounded-full ${
-                      remainingSeconds <= 20 ? 'bg-[#dc2626]' : 'bg-[#16a34a]'
-                    }`}
-                  />
-                  <span>
-                    {Math.floor(remainingSeconds / 60)}:
-                    {String(remainingSeconds % 60).padStart(2, '0')}
-                  </span>
-                </span>
-              </>
-            )}
-            {roundState.mode === 'duel_seed' && (
-              <>
-                <span className="text-[#262a30]">|</span>
-                <span className="font-mono text-[11px] text-[#9ca3af]">
-                  SEED: {roundState.seedCode}
-                </span>
-              </>
-            )}
-          </div>
-
-          {telemetry && (
-            <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-mono tabular-nums text-[#9ca3af] border-t border-[#262a30] pt-1">
-              <span className="flex items-center gap-1 text-[#f3f4f6]">
-                <span
-                  className={`inline-block w-1.5 h-1.5 rounded-full ${
-                    telemetry.fps >= 30 ? 'bg-[#16a34a]' : 'bg-[#d97706]'
-                  }`}
-                />
-                <span>{telemetry.fps} FPS</span>
-              </span>
-              <span>p95 {telemetry.frameTimeP95Ms}ms</span>
-              <span>Profile {telemetry.activeProfile}</span>
-              <span>
-                Chunks {telemetry.visibleChunksCount}/{telemetry.loadedChunksCount}
-              </span>
-              <span>
-                Cache {cacheMb}/{budgetMb}MB
-              </span>
-              <span>Splats {telemetry.activeSplatCount.toLocaleString()}</span>
-              <span>
-                ENU ({telemetry.playerENU.east}m, {telemetry.playerENU.north}m) · HDG{' '}
-                {telemetry.cameraYawDeg}°
-              </span>
-            </div>
+      {/* Top Bar: Clean Minimal Utility Controls */}
+      <div className="flex items-center justify-end gap-1.5 pointer-events-auto">
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            onToggleMute();
+          }}
+          className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
+        >
+          {isMuted ? (
+            <VolumeX className="w-4 h-4 text-[#9ca3af]" strokeWidth={1.75} />
+          ) : (
+            <Volume2 className="w-4 h-4 text-[#f3f4f6]" strokeWidth={1.75} />
           )}
+        </button>
 
-          {explorerMeta && telemetry?.playerWGS84 && (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-[#f3f4f6] border-t border-[#262a30] pt-1">
-              <span>{explorerMeta.title}</span>
-              <span className="text-[#9ca3af]">
-                WGS84 ({telemetry.playerWGS84.lat.toFixed(5)}°, {telemetry.playerWGS84.lon.toFixed(5)}°) · H3{' '}
-                {telemetry.currentH3Index}
-              </span>
-            </div>
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Reset Player to Spawn Origin"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            onResetToSpawn();
+          }}
+          className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
+        >
+          <RotateCcw className="w-4 h-4" strokeWidth={1.75} />
+        </button>
+
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={gameState === 'paused' ? 'Resume Game' : 'Pause Game'}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            onTogglePause();
+          }}
+          className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
+        >
+          {gameState === 'paused' ? (
+            <Play className="w-4 h-4 text-[#0284c7]" strokeWidth={1.75} />
+          ) : (
+            <Pause className="w-4 h-4" strokeWidth={1.75} />
           )}
-        </div>
-
-        {/* Top-Right Compact Utility Buttons */}
-        <div className="pointer-events-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label="Open Coverage Registry and Settings"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onOpenCoverageDrawer();
-            }}
-            className="h-9 px-2.5 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-semibold rounded-[4px] flex items-center gap-1.5 cursor-pointer"
-          >
-            <Database className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
-            <span className="hidden sm:inline">Coverage & Settings</span>
-          </button>
-
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label={isMuted ? 'Unmute Audio' : 'Mute Audio'}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onToggleMute();
-            }}
-            className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
-          >
-            {isMuted ? (
-              <VolumeX className="w-4 h-4 text-[#9ca3af]" strokeWidth={1.75} />
-            ) : (
-              <Volume2 className="w-4 h-4 text-[#f3f4f6]" strokeWidth={1.75} />
-            )}
-          </button>
-
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label="Reset Player to Spawn Origin"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onResetToSpawn();
-            }}
-            className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
-          >
-            <RotateCcw className="w-4 h-4" strokeWidth={1.75} />
-          </button>
-
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label={gameState === 'paused' ? 'Resume Game' : 'Pause Game'}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onTogglePause();
-            }}
-            className="w-9 h-9 border border-[#262a30] bg-[#111315] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] flex items-center justify-center cursor-pointer"
-          >
-            {gameState === 'paused' ? (
-              <Play className="w-4 h-4 text-[#0284c7]" strokeWidth={1.75} />
-            ) : (
-              <Pause className="w-4 h-4" strokeWidth={1.75} />
-            )}
-          </button>
-        </div>
+        </button>
       </div>
 
       {/* Center Reticle (Non-intrusive 4px crosshair) */}
@@ -345,52 +251,13 @@ export const GameplayHudOverlay: React.FC<GameplayHudOverlayProps> = ({
 
             {/* Bottom Action Bar: Touch / Accessible Controls + Submit Guess CTA */}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex items-center gap-1.5">
-                {roundState.allowMovement ? (
-                  <>
-                    <button
-                      type="button"
-                      aria-label="Step Forward"
-                      onPointerDown={() => onVirtualMove(1, 0)}
-                      onPointerUp={() => onVirtualMove(0, 0)}
-                      onPointerLeave={() => onVirtualMove(0, 0)}
-                      className="h-9 px-2.5 border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-mono rounded-[4px] cursor-pointer"
-                    >
-                      FWD [W]
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Step Backward"
-                      onPointerDown={() => onVirtualMove(-1, 0)}
-                      onPointerUp={() => onVirtualMove(0, 0)}
-                      onPointerLeave={() => onVirtualMove(0, 0)}
-                      className="h-9 px-2.5 border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-mono rounded-[4px] cursor-pointer"
-                    >
-                      BACK [S]
-                    </button>
-                  </>
-                ) : (
-                  <span className="text-xs font-mono text-[#d97706] px-2">
-                    MOVEMENT LOCKED (PAN ONLY)
-                  </span>
-                )}
-
-                <button
-                  type="button"
-                  aria-label="Turn Camera Left"
-                  onClick={() => onVirtualLook(-22, 0)}
-                  className="h-9 px-2.5 border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-mono rounded-[4px] cursor-pointer"
-                >
-                  LOOK L
-                </button>
-                <button
-                  type="button"
-                  aria-label="Turn Camera Right"
-                  onClick={() => onVirtualLook(22, 0)}
-                  className="h-9 px-2.5 border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-mono rounded-[4px] cursor-pointer"
-                >
-                  LOOK R
-                </button>
+              <div className="flex items-center gap-2 text-xs font-mono text-[#9ca3af] px-1">
+                <span className="text-[#0284c7] font-semibold">GAME FREE ROAM:</span>
+                <span>WASD to Walk</span>
+                <span>·</span>
+                <span>Shift Sprint</span>
+                <span>·</span>
+                <span>Click & Drag to Look</span>
               </div>
 
               <div className="flex items-center gap-2">

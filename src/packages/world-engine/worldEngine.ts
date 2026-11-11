@@ -234,6 +234,8 @@ export class WorldEngineController {
   private pendingPitchDeltaRad = 0;
   private virtualJoystickInput = { forward: 0, right: 0 };
   private stridePulse = 0;
+  private isPanoTransitioning = false;
+  private lastPanoTransitionMs = 0;
 
   private frameId = 0;
   private lastFrameTimestampMs = performance.now();
@@ -270,6 +272,24 @@ export class WorldEngineController {
     this.streetViewMountEl.style.transformOrigin = '50% 54%';
     this.streetViewMountEl.style.willChange = 'transform';
     this.streetViewStageWrapper.appendChild(this.streetViewMountEl);
+
+    // Inject strict CSS to ensure zero arrows or chevron markers appear on the street
+    if (!document.getElementById('earth-uncovered-hide-arrows')) {
+      const arrowStyle = document.createElement('style');
+      arrowStyle.id = 'earth-uncovered-hide-arrows';
+      arrowStyle.textContent = `
+        [data-testid="real-streetview-pano"] .gm-sv-label,
+        [data-testid="real-streetview-pano"] [aria-label*="Go "],
+        [data-testid="real-streetview-pano"] [title*="Go "],
+        [data-testid="real-streetview-pano"] .scene-anchor,
+        [data-testid="real-streetview-pano"] img[src*="arrow"] {
+          display: none !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
+        }
+      `;
+      document.head.appendChild(arrowStyle);
+    }
 
     // 2. Create the Photorealistic 3D Map (`gmp-map-3d`) Stage Container
     this.map3DMountEl = document.createElement('div');
@@ -362,8 +382,8 @@ export class WorldEngineController {
         visible: true,
         addressControl: false,
         showRoadLabels: Boolean(this.activeRound?.explorerMetadata),
-        linksControl: this.allowMovement,
-        clickToGo: this.allowMovement,
+        linksControl: false,
+        clickToGo: false,
         panControl: false,
         zoomControl: false,
         fullscreenControl: false,
@@ -477,8 +497,8 @@ export class WorldEngineController {
     this.streetViewPanorama.setOptions({
       addressControl: false,
       showRoadLabels: Boolean(bootstrap.explorerMetadata),
-      linksControl: this.allowMovement,
-      clickToGo: this.allowMovement,
+      linksControl: false,
+      clickToGo: false,
       panControl: false,
       zoomControl: false,
       fullscreenControl: false,
@@ -770,6 +790,58 @@ export class WorldEngineController {
     }
 
     return false;
+  }
+
+  /**
+   * Free-roam node transition: when the player walks ~5 meters away from the active Street View node,
+   * seamlessly query and load the next panorama along the motion heading.
+   */
+  private async transitionToNextStreetViewNode(dEast: number, dNorth: number): Promise<void> {
+    const now = performance.now();
+    if (now - this.lastPanoTransitionMs < 800 || this.isPanoTransitioning) return;
+    this.isPanoTransitioning = true;
+    this.lastPanoTransitionMs = now;
+
+    try {
+      const travelHeadingDeg = (((Math.atan2(dEast, dNorth) * 180) / Math.PI) % 360 + 360) % 360;
+      let bestLink: GoogleStreetViewLink | null = null;
+      let bestDiff = 95;
+
+      if (this.streetViewPanorama) {
+        const links = this.streetViewPanorama.getLinks() ?? [];
+        for (const link of links) {
+          if (!link || !link.pano || typeof link.heading !== 'number') continue;
+          const diff = Math.abs(shortestAngleDiffDeg(travelHeadingDeg, link.heading));
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestLink = link;
+          }
+        }
+      }
+
+      if (bestLink && bestLink.pano && this.streetViewPanorama) {
+        this.streetViewPanorama.setPano(bestLink.pano);
+        return;
+      }
+
+      if (this.streetViewService && this.streetViewLib && this.streetViewPanorama) {
+        const currentCoord = enuToWgs84(this.capsule, this.spawnOriginWGS84);
+        const { data } = await this.streetViewService.getPanorama({
+          location: { lat: currentCoord.lat, lng: currentCoord.lon },
+          radius: 50,
+          preference: this.streetViewLib.StreetViewPreference.NEAREST,
+          source: this.streetViewLib.StreetViewSource.OUTDOOR,
+        });
+
+        if (data.location?.pano && data.location.pano !== this.currentPanoId) {
+          this.streetViewPanorama.setPano(data.location.pano);
+        }
+      }
+    } catch {
+      // Free roam continues uninterrupted
+    } finally {
+      this.isPanoTransitioning = false;
+    }
   }
 
   public getCapabilities() {
@@ -1145,28 +1217,33 @@ export class WorldEngineController {
       // Auto-rotation removed per user request: keep camera steady at initial Street View orientation
     } else if (!this.isPaused) {
       let moveForward = this.virtualJoystickInput.forward;
+      let moveRight = this.virtualJoystickInput.right;
       let lookYawInput = 0;
 
       if (this.keysHeld.has('KeyW') || this.keysHeld.has('ArrowUp')) moveForward += 1;
       if (this.keysHeld.has('KeyS') || this.keysHeld.has('ArrowDown')) moveForward -= 1;
-      if (this.keysHeld.has('KeyD') || this.keysHeld.has('ArrowRight')) lookYawInput += 1;
-      if (this.keysHeld.has('KeyA') || this.keysHeld.has('ArrowLeft')) lookYawInput -= 1;
+      if (this.keysHeld.has('KeyD')) moveRight += 1;
+      if (this.keysHeld.has('KeyA')) moveRight -= 1;
+      if (this.keysHeld.has('ArrowRight')) lookYawInput += 1;
+      if (this.keysHeld.has('ArrowLeft')) lookYawInput -= 1;
+
+      const sprintHeld = this.keysHeld.has('ShiftLeft') || this.keysHeld.has('ShiftRight');
 
       if (lookYawInput !== 0) {
-        this.pendingYawDeltaRad += lookYawInput * dtSec * 1.45 * this.mouseSensitivity;
+        this.pendingYawDeltaRad += lookYawInput * dtSec * 1.65 * this.mouseSensitivity;
       }
 
       const hasLookDelta =
         Math.abs(this.pendingYawDeltaRad) > 1e-5 ||
         Math.abs(this.pendingPitchDeltaRad) > 1e-5;
 
-      // Update look angles and capsule state
+      // Update look angles and capsule state with real-time continuous game physics
       this.capsule = stepCapsulePhysics(
         this.capsule,
         {
-          moveForward: 0,
-          moveRight: 0,
-          sprintHeld: false,
+          moveForward: this.allowMovement ? Math.max(-1, Math.min(1, moveForward)) : 0,
+          moveRight: this.allowMovement ? Math.max(-1, Math.min(1, moveRight)) : 0,
+          sprintHeld,
           yawDeltaRad: this.pendingYawDeltaRad,
           pitchDeltaRad: this.pendingPitchDeltaRad,
         },
@@ -1188,26 +1265,53 @@ export class WorldEngineController {
         this.syncMap3DCamera();
       }
 
-      // Step along the real Street View road graph when pressing W/S
-      if (this.allowMovement && Math.abs(moveForward) > 0.4) {
-        this.stepAlongStreetViewHeading(moveForward > 0 ? 1 : -1);
+      // Auditory stride footsteps on movement
+      const speed = Math.hypot(this.capsule.velEast, this.capsule.velNorth);
+      if (this.allowMovement && speed > 0.5) {
+        if (Math.abs(Math.sin(this.capsule.walkCyclePhase)) > 0.93) {
+          this.audioSynth.playFootstep(sprintHeld);
+        }
+      }
+
+      // Seamless Street View node transition when walking between panorama anchors
+      const currentPanoENU = wgs84ToEnu(this.currentRealWGS84, this.spawnOriginWGS84);
+      const dEastFromPano = this.capsule.east - currentPanoENU.east;
+      const dNorthFromPano = this.capsule.north - currentPanoENU.north;
+      const distFromPano = Math.hypot(dEastFromPano, dNorthFromPano);
+
+      if (this.allowMovement && distFromPano >= 5.0 && !this.isPanoTransitioning) {
+        void this.transitionToNextStreetViewNode(dEastFromPano, dNorthFromPano);
       }
 
       this.updateDynamicChunkStreaming(false);
     }
 
-    // Apply 3D Perspective Depth & Relief Manipulation to the Real Street View Stage
+    // Apply 3D Perspective Depth, Parallax & Walking Translation to Street View Stage
+    const currentPanoENU = wgs84ToEnu(this.currentRealWGS84, this.spawnOriginWGS84);
+    const dEastFromPano = this.capsule.east - currentPanoENU.east;
+    const dNorthFromPano = this.capsule.north - currentPanoENU.north;
+
+    const fwdDisplacement =
+      dEastFromPano * Math.sin(this.capsule.yawRad) +
+      dNorthFromPano * Math.cos(this.capsule.yawRad);
+    const sideDisplacement =
+      dEastFromPano * Math.cos(this.capsule.yawRad) -
+      dNorthFromPano * Math.sin(this.capsule.yawRad);
+
     const pitchDeg = (this.capsule.pitchRad * 180) / Math.PI;
     const isRelief = this.active3DMode === 'streetview_3d_relief';
     const reliefFactor = isRelief ? Math.max(0.55, this.depthReliefStrength) : this.depthReliefStrength;
     const tiltDeg = !this.reducedEffects
       ? Math.max(-14, Math.min(14, pitchDeg * 0.16 * reliefFactor))
       : 0;
-    const strideZoom = !this.reducedEffects ? this.stridePulse * 0.045 * (0.4 + reliefFactor) : 0;
-    const baseScale = 1 + reliefFactor * (isRelief ? 0.08 : 0.03) + strideZoom;
-    const translateZPx = !this.reducedEffects ? this.stridePulse * 38 * reliefFactor : 0;
 
-    this.streetViewMountEl.style.transform = `rotateX(${tiltDeg.toFixed(2)}deg) translateZ(${translateZPx.toFixed(1)}px) scale(${baseScale.toFixed(4)})`;
+    const speed = Math.hypot(this.capsule.velEast, this.capsule.velNorth);
+    const bobY = !this.reducedEffects && speed > 0.4 ? Math.sin(this.capsule.walkCyclePhase * 2) * 3 : 0;
+    const translateZPx = Math.max(-140, Math.min(140, fwdDisplacement * 18 * reliefFactor));
+    const translateXPx = Math.max(-90, Math.min(90, -sideDisplacement * 18 * reliefFactor));
+    const baseScale = Math.max(0.85, Math.min(1.25, 1 + fwdDisplacement * 0.025 * reliefFactor));
+
+    this.streetViewMountEl.style.transform = `perspective(1100px) rotateX(${tiltDeg.toFixed(2)}deg) translate3d(${translateXPx.toFixed(1)}px, ${bobY.toFixed(1)}px, ${translateZPx.toFixed(1)}px) scale(${baseScale.toFixed(4)})`;
 
     // Sync Three.js 3D Overlay Camera 1:1 with Street View POV & Position
     const zoom = this.streetViewPanorama?.getZoom() ?? 1;
@@ -1316,6 +1420,66 @@ export class WorldEngineController {
       this.isDraggingLook = false;
     };
 
+    let isMouseDown = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.closest('button, input, select, textarea, [role="button"], a, [role="dialog"]') ||
+          target.closest('.pointer-events-auto'))
+      ) {
+        return;
+      }
+      isMouseDown = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+
+      if (!this.isTitleFlyover && !this.isPaused && this.allowMovement) {
+        if (document.pointerLockElement !== this.container) {
+          try {
+            void this.container.requestPointerLock?.();
+          } catch {
+            // Drag look fallback
+          }
+        }
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (this.isPaused) return;
+      if (document.pointerLockElement === this.container) {
+        const sens = 0.0024 * this.mouseSensitivity;
+        this.pendingYawDeltaRad += e.movementX * sens;
+        this.pendingPitchDeltaRad -= e.movementY * sens;
+      } else if (isMouseDown) {
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        const sens = 0.0035 * this.mouseSensitivity;
+        this.pendingYawDeltaRad += dx * sens;
+        this.pendingPitchDeltaRad -= dy * sens;
+      }
+    };
+
+    const onMouseUp = () => {
+      isMouseDown = false;
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (this.isPaused) return;
+      if (this.streetViewPanorama) {
+        const currentZoom = this.streetViewPanorama.getZoom() ?? 1;
+        const delta = e.deltaY > 0 ? -0.2 : 0.2;
+        const nextZoom = Math.max(0.2, Math.min(2.5, currentZoom + delta));
+        this.streetViewPanorama.setZoom(nextZoom);
+      }
+    };
+
     this.resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
@@ -1330,12 +1494,20 @@ export class WorldEngineController {
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('wheel', onWheel, { passive: true });
     window.addEventListener('blur', onBlurOrVisibility);
     document.addEventListener('visibilitychange', onBlurOrVisibility);
 
     this.cleanupListeners = () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('wheel', onWheel);
       window.removeEventListener('blur', onBlurOrVisibility);
       document.removeEventListener('visibilitychange', onBlurOrVisibility);
     };
