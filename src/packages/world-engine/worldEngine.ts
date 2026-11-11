@@ -1142,18 +1142,7 @@ export class WorldEngineController {
     if (Math.abs(this.stridePulse) < 0.005) this.stridePulse = 0;
 
     if (this.isTitleFlyover) {
-      this.flyoverTimeSec += dtSec;
-      const baseHeading = this.activeRound.streetViewTarget.headingDeg;
-      const panHeading = (baseHeading + this.flyoverTimeSec * 4.5) % 360;
-      const panPitch = 3 + Math.sin(this.flyoverTimeSec * 0.6) * 4;
-      this.capsule.yawRad = (panHeading * Math.PI) / 180;
-      this.capsule.pitchRad = (panPitch * Math.PI) / 180;
-
-      if (this.streetViewPanorama) {
-        this.isSyncingFromEnginePov = true;
-        this.streetViewPanorama.setPov({ heading: panHeading, pitch: panPitch });
-        this.isSyncingFromEnginePov = false;
-      }
+      // Auto-rotation removed per user request: keep camera steady at initial Street View orientation
     } else if (!this.isPaused) {
       let moveForward = this.virtualJoystickInput.forward;
       let lookYawInput = 0;
