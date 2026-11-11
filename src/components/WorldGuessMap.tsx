@@ -7,6 +7,7 @@ import {
 } from '@vis.gl/react-google-maps';
 import { Check, Crosshair, Globe, MapPin, Search, X } from 'lucide-react';
 import { searchWorldPlaces, type SearchPlaceItem } from '../packages/coverage/searchGazetteer';
+import { getGoogleMapsApiKey } from '../packages/shared-types/gmpConfig';
 
 export interface WorldGuessMapProps {
   guessCoord: { lat: number; lon: number } | null;
@@ -41,11 +42,7 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
   quotaExceeded,
   heightClass = 'h-56',
 }) => {
-  const apiKey = (
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
-    (typeof window !== 'undefined' ? localStorage.getItem('earth_uncovered_gmp_key') : '') ||
-    ''
-  ).trim();
+  const apiKey = getGoogleMapsApiKey();
   const hasGoogleMapsKey = Boolean(apiKey && apiKey.length > 0 && !quotaExceeded);
   const [mapEngineMode, setMapEngineMode] = useState<'google' | 'geodesic_grid'>(
     hasGoogleMapsKey ? 'google' : 'geodesic_grid'

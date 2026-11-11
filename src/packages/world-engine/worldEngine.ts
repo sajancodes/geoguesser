@@ -38,13 +38,6 @@ import {
 } from '../geographic-index/coordinates';
 import { ProceduralAudioSynth } from './soundSynth';
 import { getInMemoryChunkBuffer } from '../game-logic/clientGameService';
-import {
-  buildCompositeBuildingGroup,
-  buildRoadNetworkGroup,
-  buildStreetPropGroup,
-  buildStreetSignGroup,
-  createSurfaceMicroReliefTexture,
-} from '../rendering/proceduralMaterials';
 
 export interface WorldEngineCallbacks {
   onTelemetryUpdate: (snapshot: RuntimeTelemetrySnapshot) => void;
@@ -221,12 +214,6 @@ export class WorldEngineController {
   private splatWorldGroup: THREE.Group;
   private corridorDisposables: Array<{ dispose: () => void }> = [];
 
-  // Procedural 3D World Fallback Group & Lighting (instant fallback when Street View is loading or unavailable)
-  private proceduralWorldGroup: THREE.Group;
-  private proceduralDisposables: Array<{ dispose: () => void }> = [];
-  private dirSunLight: THREE.DirectionalLight;
-  private hemiAmbientLight: THREE.HemisphereLight;
-
   // Capsule first-person state & input state
   private capsule: CapsuleState = {
     east: 0,
@@ -288,22 +275,10 @@ export class WorldEngineController {
     this.streetViewMountEl.style.willChange = 'transform';
     this.streetViewStageWrapper.appendChild(this.streetViewMountEl);
 
-    // Inject strict CSS to ensure zero arrows or chevron markers appear on the street
-    if (!document.getElementById('earth-uncovered-hide-arrows')) {
-      const arrowStyle = document.createElement('style');
-      arrowStyle.id = 'earth-uncovered-hide-arrows';
-      arrowStyle.textContent = `
-        [data-testid="real-streetview-pano"] .gm-sv-label,
-        [data-testid="real-streetview-pano"] [aria-label*="Go "],
-        [data-testid="real-streetview-pano"] [title*="Go "],
-        [data-testid="real-streetview-pano"] .scene-anchor,
-        [data-testid="real-streetview-pano"] img[src*="arrow"] {
-          display: none !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
-        }
-      `;
-      document.head.appendChild(arrowStyle);
+    // Ensure native Street View road arrows remain visible and interactive
+    const oldHideArrowsStyle = document.getElementById('earth-uncovered-hide-arrows');
+    if (oldHideArrowsStyle) {
+      oldHideArrowsStyle.remove();
     }
 
     // 2. Create the Photorealistic 3D Map (`gmp-map-3d`) Stage Container
@@ -352,19 +327,8 @@ export class WorldEngineController {
     this.depthCorridorGroup.name = 'streetview-3d-depth-corridor';
     this.splatWorldGroup = new THREE.Group();
     this.splatWorldGroup.name = 'layer-a-gaussian-splats';
-    this.proceduralWorldGroup = new THREE.Group();
-    this.proceduralWorldGroup.name = 'procedural-3d-world';
 
-    this.dirSunLight = new THREE.DirectionalLight(0xfff8ee, 1.4);
-    this.hemiAmbientLight = new THREE.HemisphereLight(0x93c5fd, 0x475569, 0.85);
-
-    this.scene.add(
-      this.depthCorridorGroup,
-      this.splatWorldGroup,
-      this.proceduralWorldGroup,
-      this.dirSunLight,
-      this.hemiAmbientLight
-    );
+    this.scene.add(this.depthCorridorGroup, this.splatWorldGroup);
 
     this.bindEventListeners();
     void this.initGoogleStreetViewAnd3DMap();
@@ -373,7 +337,7 @@ export class WorldEngineController {
 
   private async initGoogleStreetViewAnd3DMap(): Promise<void> {
     const win = window as unknown as WindowWithGoogleMaps;
-    for (let attempt = 0; attempt < 15; attempt++) {
+    for (let attempt = 0; attempt < 120; attempt++) {
       if (this.isDisposed) return;
       if (typeof win.google?.maps?.importLibrary === 'function') {
         break;
@@ -405,11 +369,11 @@ export class WorldEngineController {
       this.streetViewPanorama = new svLib.StreetViewPanorama(this.streetViewMountEl, {
         pov: { heading: target.headingDeg, pitch: target.pitchDeg },
         zoom: 1,
-        visible: false,
+        visible: true,
         addressControl: false,
         showRoadLabels: false,
-        linksControl: false,
-        clickToGo: false,
+        linksControl: true,
+        clickToGo: true,
         panControl: false,
         zoomControl: false,
         fullscreenControl: false,
@@ -503,28 +467,93 @@ export class WorldEngineController {
       const rawLinks = pano.getLinks() ?? [];
       this.currentLinks = rawLinks.filter((l): l is GoogleStreetViewLink => Boolean(l));
       this.rebuild3DStreetDepthCorridor();
-    });
-
-    const statusChanged = pano.addListener('status_changed', () => {
-      const status = pano.getStatus?.();
-      if (status && status !== 'OK') {
-        this.streetViewMountEl.style.display = 'none';
-        this.proceduralWorldGroup.visible = true;
-      } else if (status === 'OK') {
-        this.streetViewMountEl.style.display = 'block';
-        this.proceduralWorldGroup.visible = false;
+      if (this.currentLinks.length === 0) {
+        void this.ensureClosestRoadLinkAvailable();
       }
+      this.emitTelemetry();
     });
 
-    this.streetViewListeners.push(panoChanged, posChanged, povChanged, linksChanged, statusChanged);
+    this.streetViewListeners.push(panoChanged, posChanged, povChanged, linksChanged);
+  }
+
+  /**
+   * When at an isolated photo sphere or dead end with 0 links, automatically locate the closest
+   * connected road panorama and synthesize a clickable arrow to it so the player is never stuck.
+   */
+  private async ensureClosestRoadLinkAvailable(): Promise<void> {
+    if (!this.streetViewService || !this.streetViewLib) return;
+    const originLat = this.currentRealWGS84.lat;
+    const originLon = this.currentRealWGS84.lon;
+    const startPanoId = this.currentPanoId;
+
+    // Probe outward and in 4 directions to find a panorama with connected road links
+    const probePoints = [
+      { lat: originLat, lon: originLon, radius: 200 },
+      { lat: originLat + 0.002, lon: originLon, radius: 500 },
+      { lat: originLat - 0.002, lon: originLon, radius: 500 },
+      { lat: originLat, lon: originLon + 0.002, radius: 500 },
+      { lat: originLat, lon: originLon - 0.002, radius: 500 },
+      { lat: originLat + 0.008, lon: originLon + 0.008, radius: 2500 },
+      { lat: originLat - 0.008, lon: originLon - 0.008, radius: 2500 },
+      { lat: originLat, lon: originLon, radius: 10000 },
+      { lat: originLat, lon: originLon, radius: 30000 },
+    ];
+
+    let fallbackCandidate: GoogleStreetViewPanoramaData | null = null;
+
+    for (const pt of probePoints) {
+      if (this.isDisposed || this.currentLinks.length > 0) return;
+      try {
+        const res = await this.streetViewService.getPanorama({
+          location: { lat: pt.lat, lng: pt.lon },
+          radius: pt.radius,
+          preference: this.streetViewLib.StreetViewPreference.BEST,
+          source: this.streetViewLib.StreetViewSource.OUTDOOR,
+        });
+        const data = res?.data;
+        if (data?.location?.pano && data.location.pano !== startPanoId) {
+          const validLinks = (data.links ?? []).filter(Boolean);
+          if (validLinks.length > 0) {
+            fallbackCandidate = data;
+            break;
+          }
+          if (!fallbackCandidate) {
+            fallbackCandidate = data;
+          }
+        }
+      } catch {
+        // try next probe point
+      }
+    }
+
+    if (this.isDisposed || this.currentLinks.length > 0 || !fallbackCandidate?.location?.pano) {
+      return;
+    }
+
+    let bearingDeg = (((this.capsule.yawRad * 180) / Math.PI) % 360 + 360) % 360;
+    if (fallbackCandidate.location.latLng) {
+      const dLat = fallbackCandidate.location.latLng.lat() - originLat;
+      const dLon = fallbackCandidate.location.latLng.lng() - originLon;
+      if (Math.abs(dLat) > 1e-6 || Math.abs(dLon) > 1e-6) {
+        bearingDeg = (((Math.atan2(dLon, dLat) * 180) / Math.PI) % 360 + 360) % 360;
+      }
+    }
+
+    this.currentLinks = [
+      {
+        pano: fallbackCandidate.location.pano,
+        heading: Math.round(bearingDeg),
+        description: 'Closest Road',
+      },
+    ];
+    this.rebuild3DStreetDepthCorridor();
+    this.emitTelemetry();
   }
 
   private async resolveAndMoveToStreetViewTarget(
     bootstrap: GameRoundPublicState['sceneBootstrap']
   ): Promise<void> {
     if (!this.streetViewPanorama || !this.streetViewService || !this.streetViewLib) {
-      this.streetViewMountEl.style.display = 'none';
-      this.proceduralWorldGroup.visible = true;
       return;
     }
 
@@ -539,8 +568,8 @@ export class WorldEngineController {
     this.streetViewPanorama.setOptions({
       addressControl: false,
       showRoadLabels: false,
-      linksControl: false,
-      clickToGo: false,
+      linksControl: true,
+      clickToGo: true,
       panControl: false,
       zoomControl: false,
       fullscreenControl: false,
@@ -548,59 +577,81 @@ export class WorldEngineController {
       sources: [this.streetViewLib.StreetViewSource.OUTDOOR],
     });
 
-    let outdoorData: GoogleStreetViewPanoramaData | null = null;
-    // Strictly search OUTDOOR street view only (never inside buildings)
-    for (const searchRadius of [300, 1000, 3000, 8000]) {
+    let connectedRoadData: GoogleStreetViewPanoramaData | null = null;
+    let fallbackOutdoorData: GoogleStreetViewPanoramaData | null = null;
+
+    // 1. Search OUTDOOR Street View preferring connected roads with arrows (links.length >= 1)
+    const searchAttempts: Array<{ lat: number; lon: number; radius: number; pref: string }> = [
+      { lat: target.lat, lon: target.lon, radius: 500, pref: this.streetViewLib.StreetViewPreference.BEST },
+      { lat: target.lat, lon: target.lon, radius: 2000, pref: this.streetViewLib.StreetViewPreference.BEST },
+      { lat: target.lat, lon: target.lon, radius: 6000, pref: this.streetViewLib.StreetViewPreference.BEST },
+      { lat: target.lat, lon: target.lon, radius: 500, pref: this.streetViewLib.StreetViewPreference.NEAREST },
+      { lat: target.lat, lon: target.lon, radius: 3000, pref: this.streetViewLib.StreetViewPreference.NEAREST },
+      { lat: target.lat, lon: target.lon, radius: 15000, pref: this.streetViewLib.StreetViewPreference.BEST },
+      { lat: target.lat, lon: target.lon, radius: 40000, pref: this.streetViewLib.StreetViewPreference.BEST },
+    ];
+
+    for (const attempt of searchAttempts) {
       try {
         const res = await this.streetViewService.getPanorama({
-          location: { lat: target.lat, lng: target.lon },
-          radius: searchRadius,
-          preference: this.streetViewLib.StreetViewPreference.NEAREST,
+          location: { lat: attempt.lat, lng: attempt.lon },
+          radius: attempt.radius,
+          preference: attempt.pref,
           source: this.streetViewLib.StreetViewSource.OUTDOOR,
         });
-        if (res?.data?.location?.pano) {
-          outdoorData = res.data;
-          break;
+        const data = res?.data;
+        if (data?.location?.pano) {
+          if (!fallbackOutdoorData) {
+            fallbackOutdoorData = data;
+          }
+          const validLinks = (data.links ?? []).filter(
+            (l): l is GoogleStreetViewLink => l !== null && typeof l.heading === 'number'
+          );
+          if (validLinks.length >= 1) {
+            connectedRoadData = data;
+            break;
+          }
         }
       } catch {
-        // try next radius
+        // try next search attempt
       }
     }
 
     if (this.isDisposed) return;
 
-    if (outdoorData?.location?.pano) {
-      this.currentPanoId = outdoorData.location.pano;
-      if (outdoorData.location.latLng) {
+    const chosenData = connectedRoadData ?? fallbackOutdoorData;
+
+    if (chosenData?.location?.pano) {
+      this.currentPanoId = chosenData.location.pano;
+      if (chosenData.location.latLng) {
         this.spawnOriginWGS84 = {
-          lat: outdoorData.location.latLng.lat(),
-          lon: outdoorData.location.latLng.lng(),
+          lat: chosenData.location.latLng.lat(),
+          lon: chosenData.location.latLng.lng(),
           elevation: target.elevation,
         };
         this.currentRealWGS84 = { ...this.spawnOriginWGS84 };
       }
 
       let alignedHeading = target.headingDeg;
-      if (outdoorData.links && outdoorData.links.length > 0) {
-        const validLinks = outdoorData.links.filter(
-          (l): l is GoogleStreetViewLink => l !== null && typeof l.heading === 'number'
-        );
-        if (validLinks.length > 0) {
-          this.currentLinks = validLinks;
-          let bestDiff = 360;
-          for (const link of validLinks) {
-            const linkHdg = link.heading ?? 0;
-            let diff = Math.abs((((linkHdg - target.headingDeg) % 360) + 540) % 360 - 180);
-            if (diff < bestDiff) {
-              bestDiff = diff;
-              alignedHeading = linkHdg;
-            }
+      const validLinks = (chosenData.links ?? []).filter(
+        (l): l is GoogleStreetViewLink => l !== null && typeof l.heading === 'number'
+      );
+      this.currentLinks = validLinks;
+
+      if (validLinks.length > 0) {
+        let bestDiff = 360;
+        for (const link of validLinks) {
+          const linkHdg = link.heading ?? 0;
+          const diff = Math.abs((((linkHdg - target.headingDeg) % 360) + 540) % 360 - 180);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            alignedHeading = linkHdg;
           }
         }
       }
 
       this.capsule.yawRad = (alignedHeading * Math.PI) / 180;
-      this.streetViewPanorama.setPano(outdoorData.location.pano);
+      this.streetViewPanorama.setPano(chosenData.location.pano);
       this.streetViewPanorama.setPov({
         heading: alignedHeading,
         pitch: target.pitchDeg,
@@ -608,15 +659,29 @@ export class WorldEngineController {
       this.streetViewPanorama.setZoom(this.active3DMode === 'google_photorealistic_3d' ? 0.35 : 1);
       this.streetViewPanorama.setVisible(true);
       this.streetViewMountEl.style.display = 'block';
-      this.proceduralWorldGroup.visible = false;
+
+      if (validLinks.length === 0) {
+        void this.ensureClosestRoadLinkAvailable();
+      }
     } else {
-      // In cases where Google has zero outdoor coverage in radius, cleanly fall back to procedural 3D world
-      this.streetViewMountEl.style.display = 'none';
-      this.proceduralWorldGroup.visible = true;
+      this.streetViewPanorama.setOptions({
+        linksControl: true,
+        clickToGo: true,
+        sources: [this.streetViewLib.StreetViewSource.OUTDOOR],
+      });
+      this.streetViewPanorama.setPosition({ lat: target.lat, lng: target.lon });
+      this.streetViewPanorama.setPov({
+        heading: target.headingDeg,
+        pitch: target.pitchDeg,
+      });
+      this.streetViewPanorama.setVisible(true);
+      this.streetViewMountEl.style.display = 'block';
+      void this.ensureClosestRoadLinkAvailable();
     }
 
     this.rebuild3DStreetDepthCorridor();
     this.syncMap3DCamera();
+    this.emitTelemetry();
   }
 
   /**
@@ -786,12 +851,69 @@ export class WorldEngineController {
   }
 
   /**
+   * Directly move to a specific Street View arrow link (`panoId`) and align camera heading.
+   */
+  public moveToStreetViewLink(panoId: string, headingDeg?: number): void {
+    if (!this.allowMovement || !this.streetViewPanorama || !panoId) return;
+    this.stridePulse = 1.0;
+    this.audioSynth.playFootstep(false);
+    if (typeof headingDeg === 'number' && Number.isFinite(headingDeg)) {
+      this.capsule.yawRad = (headingDeg * Math.PI) / 180;
+      const pitchDeg = (this.capsule.pitchRad * 180) / Math.PI;
+      this.isSyncingFromEnginePov = true;
+      this.streetViewPanorama.setPov({ heading: headingDeg, pitch: pitchDeg });
+      this.isSyncingFromEnginePov = false;
+    }
+    this.streetViewPanorama.setPano(panoId);
+  }
+
+  /**
+   * Unstick / Jump to the closest available road arrow when stuck in a dead end or field.
+   */
+  public async jumpToClosestRoadArrow(): Promise<void> {
+    if (!this.allowMovement || !this.streetViewPanorama) return;
+    const currentHeadingDeg = (((this.capsule.yawRad * 180) / Math.PI) % 360 + 360) % 360;
+
+    // 1. Check existing native or synthesized links and pick the closest arrow across all 360°
+    const rawLinks = this.streetViewPanorama.getLinks() ?? [];
+    const availableLinks =
+      rawLinks.filter((l): l is GoogleStreetViewLink => Boolean(l && l.pano)).length > 0
+        ? rawLinks.filter((l): l is GoogleStreetViewLink => Boolean(l && l.pano))
+        : this.currentLinks.filter((l): l is GoogleStreetViewLink => Boolean(l && l.pano));
+
+    if (availableLinks.length > 0) {
+      let bestLink = availableLinks[0];
+      let bestDiff = 360;
+      for (const link of availableLinks) {
+        const hdg = link.heading ?? currentHeadingDeg;
+        const diff = Math.abs(shortestAngleDiffDeg(currentHeadingDeg, hdg));
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestLink = link;
+        }
+      }
+      if (bestLink.pano) {
+        this.moveToStreetViewLink(bestLink.pano, bestLink.heading ?? currentHeadingDeg);
+        return;
+      }
+    }
+
+    // 2. If 0 links exist, search outward for the nearest road panorama with arrows
+    await this.ensureClosestRoadLinkAvailable();
+    const synthLink = this.currentLinks.find((l) => l && l.pano);
+    if (synthLink?.pano) {
+      this.moveToStreetViewLink(synthLink.pano, synthLink.heading ?? currentHeadingDeg);
+    }
+  }
+
+  /**
    * Step forward (+1) or backward (-1) along the real Google Street View panorama link graph (`getLinks()`).
+   * If no link is within 115°, automatically takes the closest available arrow so the player is never stuck.
    */
   public stepAlongStreetViewHeading(direction: 1 | -1): boolean {
     if (!this.allowMovement) return false;
     const now = performance.now();
-    if (now - this.lastStepTimeMs < 480) return false;
+    if (now - this.lastStepTimeMs < 380) return false;
     this.lastStepTimeMs = now;
 
     const currentHeadingDeg = (((this.capsule.yawRad * 180) / Math.PI) % 360 + 360) % 360;
@@ -803,40 +925,39 @@ export class WorldEngineController {
     this.audioSynth.playFootstep(false);
 
     if (this.streetViewPanorama) {
-      const links = this.streetViewPanorama.getLinks() ?? [];
+      const nativeLinks = (this.streetViewPanorama.getLinks() ?? []).filter(
+        (l): l is GoogleStreetViewLink => Boolean(l && l.pano)
+      );
+      const links = nativeLinks.length > 0 ? nativeLinks : this.currentLinks;
+
       let bestLink: GoogleStreetViewLink | null = null;
-      let bestDiff = 180;
+      let bestDiff = 360;
 
       for (const link of links) {
-        if (!link || !link.pano || typeof link.heading !== 'number') continue;
-        const diff = Math.abs(shortestAngleDiffDeg(targetHeadingDeg, link.heading));
+        if (!link || !link.pano) continue;
+        const linkHdg = typeof link.heading === 'number' ? link.heading : targetHeadingDeg;
+        const diff = Math.abs(shortestAngleDiffDeg(targetHeadingDeg, linkHdg));
         if (diff < bestDiff) {
           bestDiff = diff;
           bestLink = link;
         }
       }
 
-      if (bestLink && bestLink.pano && bestDiff <= 115) {
+      // Take the closest available arrow even if it's a sharp bend or dead-end turnaround
+      if (bestLink && bestLink.pano) {
+        if (bestDiff > 95 && typeof bestLink.heading === 'number' && direction === 1) {
+          this.capsule.yawRad = (bestLink.heading * Math.PI) / 180;
+          const pitchDeg = (this.capsule.pitchRad * 180) / Math.PI;
+          this.isSyncingFromEnginePov = true;
+          this.streetViewPanorama.setPov({ heading: bestLink.heading, pitch: pitchDeg });
+          this.isSyncingFromEnginePov = false;
+        }
         this.streetViewPanorama.setPano(bestLink.pano);
         return true;
       }
 
-      // If pano links are still loading, step 10 meters along the street heading and query nearest Street View pano
-      const stepMeters = 10 * direction;
-      const dEast = Math.sin(this.capsule.yawRad) * stepMeters;
-      const dNorth = Math.cos(this.capsule.yawRad) * stepMeters;
-      const nextENU = {
-        east: this.capsule.east + dEast,
-        north: this.capsule.north + dNorth,
-        up: this.capsule.up,
-      };
-      const nextWGS84 = enuToWgs84(nextENU, this.spawnOriginWGS84);
-      this.currentRealWGS84 = nextWGS84;
-      this.capsule.east = nextENU.east;
-      this.capsule.north = nextENU.north;
-      this.streetViewPanorama.setPosition({ lat: nextWGS84.lat, lng: nextWGS84.lon });
-      this.syncMap3DCamera();
-      this.rebuild3DStreetDepthCorridor();
+      // If 0 links exist at this spot, automatically jump to the closest road panorama
+      void this.jumpToClosestRoadArrow();
       return true;
     }
 
@@ -844,25 +965,29 @@ export class WorldEngineController {
   }
 
   /**
-   * Free-roam node transition: when the player walks ~5 meters away from the active Street View node,
-   * seamlessly query and load the next panorama along the motion heading.
+   * Free-roam node transition: when the player walks ~4 meters away from the active Street View node,
+   * seamlessly query and load the next panorama along the motion heading, or pick the closest available arrow.
    */
   private async transitionToNextStreetViewNode(dEast: number, dNorth: number): Promise<void> {
     const now = performance.now();
-    if (now - this.lastPanoTransitionMs < 800 || this.isPanoTransitioning) return;
+    if (now - this.lastPanoTransitionMs < 550 || this.isPanoTransitioning) return;
     this.isPanoTransitioning = true;
     this.lastPanoTransitionMs = now;
 
     try {
       const travelHeadingDeg = (((Math.atan2(dEast, dNorth) * 180) / Math.PI) % 360 + 360) % 360;
       let bestLink: GoogleStreetViewLink | null = null;
-      let bestDiff = 95;
+      let bestDiff = 360;
 
       if (this.streetViewPanorama) {
-        const links = this.streetViewPanorama.getLinks() ?? [];
+        const nativeLinks = (this.streetViewPanorama.getLinks() ?? []).filter(
+          (l): l is GoogleStreetViewLink => Boolean(l && l.pano)
+        );
+        const links = nativeLinks.length > 0 ? nativeLinks : this.currentLinks;
         for (const link of links) {
-          if (!link || !link.pano || typeof link.heading !== 'number') continue;
-          const diff = Math.abs(shortestAngleDiffDeg(travelHeadingDeg, link.heading));
+          if (!link || !link.pano) continue;
+          const linkHdg = typeof link.heading === 'number' ? link.heading : travelHeadingDeg;
+          const diff = Math.abs(shortestAngleDiffDeg(travelHeadingDeg, linkHdg));
           if (diff < bestDiff) {
             bestDiff = diff;
             bestLink = link;
@@ -870,24 +995,24 @@ export class WorldEngineController {
         }
       }
 
+      // Reset local capsule offset back to active pano origin so player never drifts into dead space
+      const currentPanoENU = wgs84ToEnu(this.currentRealWGS84, this.spawnOriginWGS84);
+      this.capsule.east = currentPanoENU.east;
+      this.capsule.north = currentPanoENU.north;
+
       if (bestLink && bestLink.pano && this.streetViewPanorama) {
+        if (bestDiff > 100 && typeof bestLink.heading === 'number') {
+          this.capsule.yawRad = (bestLink.heading * Math.PI) / 180;
+          const pitchDeg = (this.capsule.pitchRad * 180) / Math.PI;
+          this.isSyncingFromEnginePov = true;
+          this.streetViewPanorama.setPov({ heading: bestLink.heading, pitch: pitchDeg });
+          this.isSyncingFromEnginePov = false;
+        }
         this.streetViewPanorama.setPano(bestLink.pano);
         return;
       }
 
-      if (this.streetViewService && this.streetViewLib && this.streetViewPanorama) {
-        const currentCoord = enuToWgs84(this.capsule, this.spawnOriginWGS84);
-        const { data } = await this.streetViewService.getPanorama({
-          location: { lat: currentCoord.lat, lng: currentCoord.lon },
-          radius: 50,
-          preference: this.streetViewLib.StreetViewPreference.NEAREST,
-          source: this.streetViewLib.StreetViewSource.OUTDOOR,
-        });
-
-        if (data.location?.pano && data.location.pano !== this.currentPanoId) {
-          this.streetViewPanorama.setPano(data.location.pano);
-        }
-      }
+      await this.jumpToClosestRoadArrow();
     } catch {
       // Free roam continues uninterrupted
     } finally {
@@ -1012,121 +1137,10 @@ export class WorldEngineController {
       collidingWithId: null,
     };
 
-    // Always build the Procedural 3D World first so the viewport renders immediately with zero blank screen!
-    this.buildProcedural3DWorld(bootstrap);
-
     void this.resolveAndMoveToStreetViewTarget(bootstrap);
 
     this.initialLoadTimeMs = Math.round(performance.now() - t0);
     this.updateDynamicChunkStreaming(true);
-  }
-
-  /**
-   * Constructs the full Procedural 3D World (Sky, Ground, Buildings, Roads, Signs, Props, Lighting)
-   * which renders immediately and serves as seamless fallback when Street View is loading or unavailable.
-   */
-  private buildProcedural3DWorld(bootstrap: GameRoundPublicState['sceneBootstrap']): void {
-    while (this.proceduralWorldGroup.children.length > 0) {
-      this.proceduralWorldGroup.remove(this.proceduralWorldGroup.children[0]);
-    }
-    for (const item of this.proceduralDisposables) {
-      item.dispose();
-    }
-    this.proceduralDisposables = [];
-
-    const profile = PERFORMANCE_PROFILES[this.activeProfileId];
-    const enableShadows = profile.enableShadows;
-    const reliefTex = createSurfaceMicroReliefTexture('asphalt', this.capabilities.maxAnisotropy);
-    this.proceduralDisposables.push(reliefTex);
-
-    // 1. Celestial Sky Dome with location horizon/zenith coloring
-    const skyGeo = new THREE.SphereGeometry(240, 24, 16);
-    const skyMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(bootstrap.skyHorizonHex || '#9bbcd8'),
-      side: THREE.BackSide,
-      depthWrite: false,
-    });
-    this.proceduralDisposables.push(skyGeo, skyMat);
-    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-    this.proceduralWorldGroup.add(skyMesh);
-
-    // 2. Ground Plane
-    const groundGeo = new THREE.PlaneGeometry(350, 350);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(bootstrap.groundTintHex || '#57534e'),
-      roughness: 0.9,
-      metalness: 0.05,
-      bumpMap: reliefTex,
-      bumpScale: 0.02,
-    });
-    this.proceduralDisposables.push(groundGeo, groundMat);
-    const groundMesh = new THREE.Mesh(groundGeo, groundMat);
-    groundMesh.rotation.x = -Math.PI / 2;
-    groundMesh.position.y = -0.01;
-    groundMesh.receiveShadow = enableShadows;
-    this.proceduralWorldGroup.add(groundMesh);
-
-    // 3. Sun & Ambient Lighting
-    const azRad = (bootstrap.sunAzimuthDeg * Math.PI) / 180;
-    const elRad = Math.max(0.1, (bootstrap.sunElevationDeg * Math.PI) / 180);
-    const sunDist = 120;
-    this.dirSunLight.position.set(
-      sunDist * Math.cos(elRad) * Math.sin(azRad),
-      sunDist * Math.sin(elRad),
-      -sunDist * Math.cos(elRad) * Math.cos(azRad)
-    );
-    this.hemiAmbientLight.color.set(bootstrap.skyHorizonHex || '#9bbcd8');
-    this.hemiAmbientLight.groundColor.set(bootstrap.groundTintHex || '#57534e');
-
-    // 4. Roads with asphalt and lane stripes
-    if (bootstrap.roads && bootstrap.roads.length > 0) {
-      const roadGroup = buildRoadNetworkGroup(
-        bootstrap.roads,
-        reliefTex,
-        enableShadows,
-        this.proceduralDisposables
-      );
-      this.proceduralWorldGroup.add(roadGroup);
-    }
-
-    // 5. Procedural 3D Buildings with styled roofs & facades
-    if (bootstrap.buildings && bootstrap.buildings.length > 0) {
-      for (const bld of bootstrap.buildings) {
-        const bldGroup = buildCompositeBuildingGroup(
-          bld,
-          reliefTex,
-          enableShadows,
-          this.proceduralDisposables
-        );
-        this.proceduralWorldGroup.add(bldGroup);
-      }
-    }
-
-    // 6. Street Props (Lamps, Bollards, Planters)
-    if (bootstrap.props && bootstrap.props.length > 0) {
-      for (const prop of bootstrap.props) {
-        const propGroup = buildStreetPropGroup(
-          prop,
-          this.proceduralDisposables
-        );
-        this.proceduralWorldGroup.add(propGroup);
-      }
-    }
-
-    // 7. Street Signs & Navigational Clues
-    if (bootstrap.signs && bootstrap.signs.length > 0) {
-      for (const sign of bootstrap.signs) {
-        const signGroup = buildStreetSignGroup(
-          sign,
-          this.capabilities.maxAnisotropy,
-          this.proceduralDisposables
-        );
-        this.proceduralWorldGroup.add(signGroup);
-      }
-    }
-
-    // Always visible by default
-    this.proceduralWorldGroup.visible = true;
   }
 
   /**
@@ -1422,7 +1436,7 @@ export class WorldEngineController {
         Math.abs(this.pendingYawDeltaRad) > 1e-5 ||
         Math.abs(this.pendingPitchDeltaRad) > 1e-5;
 
-      // Update look angles and capsule state with real-time continuous game physics
+      // Update look angles and capsule state with real-time continuous game physics (no fake invisible walls)
       this.capsule = stepCapsulePhysics(
         this.capsule,
         {
@@ -1434,9 +1448,9 @@ export class WorldEngineController {
         },
         dtSec,
         this.allowMovement,
-        this.activeRound.buildings || [],
-        this.activeRound.props || [],
-        this.activeRound.roads || []
+        [],
+        [],
+        []
       );
       this.pendingYawDeltaRad = 0;
       this.pendingPitchDeltaRad = 0;
@@ -1464,7 +1478,7 @@ export class WorldEngineController {
       const dNorthFromPano = this.capsule.north - currentPanoENU.north;
       const distFromPano = Math.hypot(dEastFromPano, dNorthFromPano);
 
-      if (this.allowMovement && distFromPano >= 5.0 && !this.isPanoTransitioning) {
+      if (this.allowMovement && distFromPano >= 3.8 && !this.isPanoTransitioning) {
         void this.transitionToNextStreetViewNode(dEastFromPano, dNorthFromPano);
       }
 
@@ -1572,6 +1586,13 @@ export class WorldEngineController {
       active3DMode: this.active3DMode,
       streetViewPanoId: this.currentPanoId,
       linkedPanosCount: this.currentLinks.length,
+      streetViewLinks: this.currentLinks
+        .filter((l): l is GoogleStreetViewLink => Boolean(l && l.pano))
+        .map((l) => ({
+          pano: l.pano as string,
+          heading: Math.round(typeof l.heading === 'number' ? l.heading : 0),
+          description: l.description || 'Road',
+        })),
       depthReliefStrength: this.depthReliefStrength,
     });
   }
@@ -1594,6 +1615,13 @@ export class WorldEngineController {
       }
 
       this.keysHeld.add(e.code);
+      if (!this.isTitleFlyover && !this.isPaused && this.allowMovement) {
+        if (e.code === 'KeyW' || e.code === 'ArrowUp') {
+          this.stepAlongStreetViewHeading(1);
+        } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
+          this.stepAlongStreetViewHeading(-1);
+        }
+      }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1622,16 +1650,6 @@ export class WorldEngineController {
       isMouseDown = true;
       lastX = e.clientX;
       lastY = e.clientY;
-
-      if (!this.isTitleFlyover && !this.isPaused && this.allowMovement) {
-        if (document.pointerLockElement !== this.container) {
-          try {
-            void this.container.requestPointerLock?.();
-          } catch {
-            // Drag look fallback
-          }
-        }
-      }
     };
 
     const onMouseMove = (e: MouseEvent) => {
@@ -1728,14 +1746,6 @@ export class WorldEngineController {
       item.dispose();
     }
     this.corridorDisposables = [];
-
-    while (this.proceduralWorldGroup.children.length > 0) {
-      this.proceduralWorldGroup.remove(this.proceduralWorldGroup.children[0]);
-    }
-    for (const item of this.proceduralDisposables) {
-      item.dispose();
-    }
-    this.proceduralDisposables = [];
   }
 
   public dispose(): void {
