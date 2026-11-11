@@ -226,7 +226,6 @@ export interface RuntimeTelemetrySnapshot {
   active3DMode?: StreetView3DMode;
   streetViewPanoId?: string | null;
   linkedPanosCount?: number;
-  streetViewLinks?: Array<{ pano: string; heading: number; description: string }>;
   depthReliefStrength?: number;
 }
 

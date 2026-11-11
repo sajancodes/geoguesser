@@ -1,13 +1,10 @@
 import React, { useState } from 'react';
 import {
-  ArrowDown,
-  ArrowUp,
   ChevronDown,
   ChevronUp,
   Compass,
   Database,
   MapPin,
-  Navigation,
   Pause,
   Play,
   RotateCcw,
@@ -45,9 +42,6 @@ export interface GameplayHudOverlayProps {
   depthReliefStrength: number;
   onChangeDepthRelief: (strength: number) => void;
   quotaExceeded: boolean;
-  onMoveToStreetViewLink?: (pano: string, headingDeg?: number) => void;
-  onJumpToClosestRoad?: () => void;
-  onStepDirection?: (direction: 1 | -1) => void;
 }
 
 const MODE_LABELS: Record<GameModeId, string> = {
@@ -81,15 +75,9 @@ export const GameplayHudOverlay: React.FC<GameplayHudOverlayProps> = ({
   depthReliefStrength,
   onChangeDepthRelief,
   quotaExceeded,
-  onMoveToStreetViewLink,
-  onJumpToClosestRoad,
-  onStepDirection,
 }) => {
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [mapExpanded, setMapExpanded] = useState(false);
-
-  const cameraYawDeg = telemetry?.cameraYawDeg ?? 0;
-  const streetLinks = telemetry?.streetViewLinks ?? [];
 
   const explorerMeta = roundState.sceneBootstrap.explorerMetadata;
   const cacheMb = telemetry ? (telemetry.cacheUsedBytes / (1024 * 1024)).toFixed(1) : '0.0';
@@ -154,65 +142,6 @@ export const GameplayHudOverlay: React.FC<GameplayHudOverlayProps> = ({
 
       {/* Collapsible Unified Bottom Control & Guess Map Dock */}
       <div className="w-full max-w-4xl mx-auto flex flex-col items-center">
-        {/* Interactive Street View Road Arrows & Unstick / Closest Road Bar */}
-        {roundState.allowMovement && (
-          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 mb-2 px-3 py-1.5 border border-[#262a30] bg-[#111315]/90 backdrop-blur-md rounded-[4px] shadow-xl">
-            <button
-              type="button"
-              onClick={() => onStepDirection?.(1)}
-              title="Move Forward along road (W / Up Arrow)"
-              className="flex items-center gap-1 px-2.5 py-1 bg-[#181b1f] hover:bg-[#0284c7] border border-[#262a30] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-semibold rounded-[4px] cursor-pointer transition-colors"
-            >
-              <ArrowUp className="w-3.5 h-3.5 text-[#38bdf8]" strokeWidth={2.25} />
-              <span>Forward</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onStepDirection?.(-1)}
-              title="Move Backward along road (S / Down Arrow)"
-              className="flex items-center gap-1 px-2.5 py-1 bg-[#181b1f] hover:bg-[#0284c7] border border-[#262a30] hover:border-[#0284c7] text-[#f3f4f6] text-xs font-semibold rounded-[4px] cursor-pointer transition-colors"
-            >
-              <ArrowDown className="w-3.5 h-3.5 text-[#38bdf8]" strokeWidth={2.25} />
-              <span>Back</span>
-            </button>
-
-            {streetLinks.map((link, idx) => {
-              const relAngle = (((link.heading - cameraYawDeg) % 360) + 540) % 360 - 180;
-              return (
-                <button
-                  key={`${link.pano}-${idx}`}
-                  type="button"
-                  onClick={() => onMoveToStreetViewLink?.(link.pano, link.heading)}
-                  title={`Follow road arrow (${link.heading}°)`}
-                  className="flex items-center gap-1.5 px-2.5 py-1 bg-[#181b1f] hover:bg-[#0284c7] border border-[#0284c7]/60 text-[#f3f4f6] text-xs font-mono rounded-[4px] cursor-pointer transition-colors"
-                >
-                  <ArrowUp
-                    className="w-3.5 h-3.5 text-[#38bdf8] shrink-0"
-                    style={{ transform: `rotate(${Math.round(relAngle)}deg)` }}
-                    strokeWidth={2.25}
-                  />
-                  <span className="truncate max-w-[110px]">
-                    {link.description && link.description !== 'Road'
-                      ? link.description
-                      : `Arrow ${link.heading}°`}
-                  </span>
-                </button>
-              );
-            })}
-
-            <button
-              type="button"
-              onClick={() => onJumpToClosestRoad?.()}
-              title="Stuck? Jump to the closest available road arrow"
-              className="flex items-center gap-1.5 px-2.5 py-1 bg-[#0284c7]/20 hover:bg-[#0284c7] border border-[#0284c7] text-[#38bdf8] hover:text-[#f3f4f6] text-xs font-semibold rounded-[4px] cursor-pointer transition-colors"
-            >
-              <Navigation className="w-3.5 h-3.5" strokeWidth={2} />
-              <span>Closest Road Arrow</span>
-            </button>
-          </div>
-        )}
-
         <div className="pointer-events-auto flex items-center gap-1.5 mb-1">
           <button
             type="button"

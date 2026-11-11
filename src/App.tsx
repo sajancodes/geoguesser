@@ -23,7 +23,7 @@ import {
   createGameSession,
   submitGuess,
 } from './packages/game-logic/clientGameService';
-import { getGoogleMapsApiKey } from './packages/shared-types/gmpConfig';
+import { Key, X } from 'lucide-react';
 import type { DecodedGaussianSplatCloud } from './packages/splat-renderer/splatBinary';
 
 type AppShellState = 'title' | 'playing' | 'paused' | 'gameover';
@@ -67,7 +67,18 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [active3DMode, setActive3DMode] = useState<StreetView3DMode>('streetview_3d_hybrid');
   const [depthReliefStrength, setDepthReliefStrength] = useState<number>(0.45);
-  const googleMapsApiKey = getGoogleMapsApiKey();
+
+  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('earth_uncovered_gmp_key') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [keyInputValue, setKeyInputValue] = useState<string>('');
+
+  const googleMapsApiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || customApiKey || '').trim();
 
   // Mirror shellState to document.body.dataset.state
   useEffect(() => {
@@ -395,6 +406,11 @@ export default function App() {
           isStarting={isStartingRound}
           onStartGame={handleStartFromTitle}
           onOpenCoverageDrawer={() => setIsCoverageDrawerOpen(true)}
+          onOpenKeyModal={() => {
+            setKeyInputValue(customApiKey);
+            setIsKeyModalOpen(true);
+          }}
+          hasGoogleMapsKey={Boolean(googleMapsApiKey)}
         />
       )}
 
@@ -439,15 +455,6 @@ export default function App() {
           depthReliefStrength={depthReliefStrength}
           onChangeDepthRelief={handleChangeDepthRelief}
           quotaExceeded={gmpQuotaExceeded}
-          onMoveToStreetViewLink={(pano, hdg) =>
-            engineRef.current?.moveToStreetViewLink(pano, hdg)
-          }
-          onJumpToClosestRoad={() => {
-            void engineRef.current?.jumpToClosestRoadArrow();
-          }}
-          onStepDirection={(dir) => {
-            engineRef.current?.stepAlongStreetViewHeading(dir);
-          }}
         />
       )}
 
@@ -500,6 +507,99 @@ export default function App() {
         }}
         onIngestCustomSplatCloud={handleIngestCustomSplat}
       />
+
+      {/* Google Maps API Key Modal */}
+      {isKeyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-md border border-[#262a30] bg-[#111315] p-5 sm:p-6 rounded-[4px] shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#262a30]">
+              <div className="flex items-center gap-2 text-[#f3f4f6] font-semibold text-sm">
+                <Key className="w-4 h-4 text-[#0284c7]" />
+                <span>Google Maps Platform Key</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsKeyModalOpen(false)}
+                className="text-[#9ca3af] hover:text-[#f3f4f6] p-1 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] leading-relaxed">
+              Earth Uncovered operates <strong>100% serverlessly</strong>. Out-of-the-box, it renders a high-performance <strong>Procedural 3D World</strong> with roads, buildings, signs, and celestial lighting with no API key needed.
+            </p>
+            <p className="text-xs text-[#9ca3af] leading-relaxed">
+              If deploying on Vercel and you want Google Street View panoramas, enter your Google Maps Platform API key below. It is stored solely in your local browser storage:
+            </p>
+
+            <div className="space-y-1.5">
+              <label htmlFor="gmp-key-input" className="block text-[11px] font-mono text-[#9ca3af]">
+                API Key (starts with AIzaSy...):
+              </label>
+              <input
+                id="gmp-key-input"
+                type="text"
+                value={keyInputValue}
+                onChange={(e) => setKeyInputValue(e.target.value)}
+                placeholder="AIzaSy..."
+                className="w-full px-3 py-2 bg-[#181b1f] border border-[#262a30] focus:border-[#0284c7] rounded-[4px] text-xs font-mono text-[#f3f4f6] outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              {customApiKey ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      localStorage.removeItem('earth_uncovered_gmp_key');
+                    } catch {}
+                    setCustomApiKey('');
+                    setKeyInputValue('');
+                    setIsKeyModalOpen(false);
+                    window.location.reload();
+                  }}
+                  className="px-3 py-1.5 border border-[#dc2626]/40 text-[#ef4444] hover:bg-[#dc2626]/10 text-xs rounded-[4px] cursor-pointer"
+                >
+                  Clear Key
+                </button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsKeyModalOpen(false)}
+                  className="px-3 py-1.5 border border-[#262a30] bg-[#181b1f] text-[#9ca3af] hover:text-[#f3f4f6] text-xs rounded-[4px] cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const trimmed = keyInputValue.trim();
+                    try {
+                      if (trimmed) {
+                        localStorage.setItem('earth_uncovered_gmp_key', trimmed);
+                      } else {
+                        localStorage.removeItem('earth_uncovered_gmp_key');
+                      }
+                    } catch {}
+                    setCustomApiKey(trimmed);
+                    setIsKeyModalOpen(false);
+                    window.location.reload();
+                  }}
+                  className="px-4 py-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-[#f3f4f6] font-semibold text-xs rounded-[4px] cursor-pointer shadow"
+                >
+                  Save & Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
