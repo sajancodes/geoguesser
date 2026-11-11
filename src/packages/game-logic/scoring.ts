@@ -73,11 +73,12 @@ export function evaluateGuessAgainstLocation(
 export function selectFairPlayableLocation(
   recentLocationIds: string[],
   countryCodeFilter?: string | null,
-  seedCode?: string | null
+  seedCode?: string | null,
+  cityNameFilter?: string | null
 ): LocationCoverageRecord {
-  const eligible = getEligiblePlayableLocations(countryCodeFilter ?? null);
+  const eligible = getEligiblePlayableLocations(countryCodeFilter ?? null, cityNameFilter ?? null);
   if (eligible.length === 0) {
-    const fallback = getEligiblePlayableLocations(null);
+    const fallback = getEligiblePlayableLocations(null, null);
     return fallback[0];
   }
 

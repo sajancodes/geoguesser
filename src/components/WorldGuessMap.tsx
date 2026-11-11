@@ -256,24 +256,18 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
       </div>
 
       {!readOnly && (
-        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 border-t border-[#262a30] bg-[#111315] text-[11px]">
-          <div className="flex items-center gap-1.5 text-[#9ca3af]">
+        <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-t border-[#262a30] bg-[#111315] text-[11px] text-[#9ca3af]">
+          <div className="flex items-center gap-1.5">
             <Crosshair className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
-            <span>Survey Sector Anchors:</span>
+            <span>Click map to place your deduction pin</span>
           </div>
-          <div className="flex flex-wrap items-center gap-1">
-            {REFERENCE_ANCHORS.map((anchor) => (
-              <button
-                key={anchor.label}
-                type="button"
-                onClick={() => onSelectGuessCoord(anchor.lat, anchor.lon)}
-                className="flex items-center gap-1 px-2 py-0.5 border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#f3f4f6] rounded-[4px] font-mono text-[11px] cursor-pointer"
-              >
-                <MapPin className="w-3 h-3 text-[#0284c7]" strokeWidth={1.75} />
-                <span>{anchor.label}</span>
-              </button>
-            ))}
-          </div>
+          {guessCoord ? (
+            <span className="font-mono text-[#0284c7] font-semibold">
+              Pin: {guessCoord.lat.toFixed(2)}°, {guessCoord.lon.toFixed(2)}°
+            </span>
+          ) : (
+            <span className="text-[10px] text-[#6b7280]">No pin placed yet</span>
+          )}
         </div>
       )}
     </div>

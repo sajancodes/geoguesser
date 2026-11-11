@@ -135,6 +135,7 @@ export interface CoverageLayerStatus {
 export interface LocationCoverageRecord {
   locationId: string;
   title: string;
+  cityName: string;
   countryCode: string;
   countryName: string;
   regionName: string;

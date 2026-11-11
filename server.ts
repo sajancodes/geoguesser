@@ -91,6 +91,7 @@ async function startServer() {
     const body = req.body as {
       mode?: GameModeId;
       countryFilter?: string | null;
+      cityFilter?: string | null;
       seedCode?: string | null;
       locationId?: string | null;
       roundNumber?: number;
@@ -100,6 +101,7 @@ async function startServer() {
 
     const mode: GameModeId = body.mode ?? 'classic';
     const countryFilter = body.countryFilter ?? null;
+    const cityFilter = body.cityFilter ?? null;
     const roundNumber = Math.max(1, Number(body.roundNumber) || 1);
     const totalRounds = mode === 'explorer' ? 1 : Math.max(1, Number(body.totalRounds) || 5);
     const recentIds = Array.isArray(body.recentLocationIds) ? body.recentLocationIds : [];
@@ -109,17 +111,20 @@ async function startServer() {
         : makeRandomId('SEED').toUpperCase().replace('_', '-');
 
     let selectedLocation: LocationCoverageRecord | undefined;
-    if (body.locationId) {
+    // If a specific locationId was requested and no city/country filter is set:
+    if (body.locationId && !cityFilter && !countryFilter) {
       const candidate = COVERAGE_DATABASE.find((c) => c.locationId === body.locationId);
       if (candidate && evaluateLocationEligibility(candidate).eligible) {
         selectedLocation = candidate;
       }
     }
+    // Otherwise select a random eligible place within the requested city or country
     if (!selectedLocation) {
       selectedLocation = selectFairPlayableLocation(
         recentIds,
         countryFilter,
-        mode === 'duel_seed' ? seedCode : null
+        mode === 'duel_seed' ? seedCode : null,
+        cityFilter
       );
     }
 

@@ -10,7 +10,8 @@ import type {
   StreetView3DMode,
 } from './packages/shared-types';
 import { WorldEngineController } from './packages/world-engine/worldEngine';
-import { TitleScreenModal } from './components/TitleScreenModal';
+import { TitleScreenModal, type SelectionType } from './components/TitleScreenModal';
+import { COVERAGE_DATABASE } from './packages/coverage/coverageDatabase';
 import { GameplayHudOverlay } from './components/GameplayHudOverlay';
 import { RoundResultsModal } from './components/RoundResultsModal';
 import {
@@ -29,6 +30,11 @@ export default function App() {
   const [selectedMode, setSelectedMode] = useState<GameModeId>('classic');
   const [countryFilter, setCountryFilter] = useState<string>('JP');
   const [seedCode, setSeedCode] = useState<string>('SEED-KYOTO-1');
+
+  // Landing selector state: city, country, or random worldwide
+  const [selectionType, setSelectionType] = useState<SelectionType>('city');
+  const [selectedCity, setSelectedCity] = useState<string>('Paris');
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>('JP');
 
   const [coverageEntries, setCoverageEntries] = useState<CoverageRegistryEntry[]>([]);
   const [eligibleCount, setEligibleCount] = useState<number>(4);
@@ -83,29 +89,6 @@ export default function App() {
           if (!cancelled) {
             setCoverageEntries(covData.locations);
             setEligibleCount(covData.eligibleCount);
-          }
-        }
-
-        // Load a real 3D preview round for the Title Screen live camera tour
-        const sessRes = await fetch('/api/game/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'classic',
-            roundNumber: 1,
-            totalRounds: 5,
-            recentLocationIds: [],
-          }),
-        });
-        if (sessRes.ok) {
-          const initialRound = (await sessRes.json()) as GameRoundPublicState;
-          if (!cancelled) {
-            setRoundState(initialRound);
-            engineRef.current?.loadSceneBootstrap(
-              initialRound.sceneBootstrap,
-              initialRound.allowMovement
-            );
-            engineRef.current?.setTitleFlyoverMode(true);
           }
         }
       } catch (err) {
@@ -166,6 +149,8 @@ export default function App() {
       totalRounds: number;
       resetCumulative: boolean;
       specificLocationId?: string | null;
+      countryFilter?: string | null;
+      cityFilter?: string | null;
     }) => {
       setIsStartingRound(true);
       setErrorBanner(null);
@@ -176,7 +161,8 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: options.mode,
-            countryFilter: options.mode === 'country_challenge' ? countryFilter : null,
+            countryFilter: options.countryFilter !== undefined ? options.countryFilter : null,
+            cityFilter: options.cityFilter !== undefined ? options.cityFilter : null,
             seedCode: options.mode === 'duel_seed' ? seedCode : null,
             locationId: options.specificLocationId ?? null,
             roundNumber: options.roundNumber,
@@ -217,8 +203,21 @@ export default function App() {
         setIsStartingRound(false);
       }
     },
-    [countryFilter, recentLocationIds, seedCode]
+    [recentLocationIds, seedCode]
   );
+
+  // Launch game session based on user's city/country selection with a random drop
+  const handleStartFromTitle = useCallback(() => {
+    startRoundSession({
+      mode: 'classic',
+      roundNumber: 1,
+      totalRounds: 5,
+      resetCumulative: true,
+      cityFilter: selectionType === 'city' ? selectedCity : null,
+      countryFilter: selectionType === 'country' ? selectedCountryCode : null,
+      specificLocationId: null, // Always drop into random place!
+    });
+  }, [selectedCity, selectedCountryCode, selectionType, startRoundSession]);
 
   // Support `?autostart=1` query parameter and Enter/Space keyboard shortcut on Title Screen
   useEffect(() => {
@@ -247,17 +246,12 @@ export default function App() {
       }
       if (e.code === 'Enter' || e.code === 'Space') {
         e.preventDefault();
-        startRoundSession({
-          mode: selectedMode,
-          roundNumber: 1,
-          totalRounds: selectedMode === 'explorer' ? 1 : 5,
-          resetCumulative: true,
-        });
+        handleStartFromTitle();
       }
     };
     window.addEventListener('keydown', onTitleKeyDown);
     return () => window.removeEventListener('keydown', onTitleKeyDown);
-  }, [isCoverageDrawerOpen, selectedMode, shellState, startRoundSession]);
+  }, [handleStartFromTitle, isCoverageDrawerOpen, shellState]);
 
   // Submit guess to server-authoritative geodesic scoring endpoint
   const handleSubmitGuess = useCallback(
@@ -424,24 +418,14 @@ export default function App() {
       {/* Title Screen State */}
       {shellState === 'title' && (
         <TitleScreenModal
-          selectedMode={selectedMode}
-          onSelectMode={setSelectedMode}
-          countryFilter={countryFilter}
-          onChangeCountryFilter={setCountryFilter}
-          seedCode={seedCode}
-          onChangeSeedCode={setSeedCode}
-          eligibleCount={eligibleCount}
-          totalLocationsCount={coverageEntries.length || 8}
-          capabilities={capabilities}
+          selectionType={selectionType}
+          onChangeSelectionType={setSelectionType}
+          selectedCity={selectedCity}
+          onSelectCity={setSelectedCity}
+          selectedCountryCode={selectedCountryCode}
+          onSelectCountry={setSelectedCountryCode}
           isStarting={isStartingRound}
-          onStartGame={() =>
-            startRoundSession({
-              mode: selectedMode,
-              roundNumber: 1,
-              totalRounds: selectedMode === 'explorer' ? 1 : 5,
-              resetCumulative: true,
-            })
-          }
+          onStartGame={handleStartFromTitle}
           onOpenCoverageDrawer={() => setIsCoverageDrawerOpen(true)}
         />
       )}
