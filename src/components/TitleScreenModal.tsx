@@ -19,7 +19,6 @@ export const AVAILABLE_CITIES: CityOption[] = [
   { name: 'New York', country: 'United States', countryCode: 'US', description: 'New York avenues & waterfronts' },
   { name: 'London', country: 'United Kingdom', countryCode: 'GB', description: 'London streets & historic quarters' },
   { name: 'Rome', country: 'Italy', countryCode: 'IT', description: 'Rome vicoli & baroque piazzas' },
-  { name: 'Kathmandu', country: 'Nepal', countryCode: 'NP', description: 'Himalayan temples, stupas & Durbar squares' },
   { name: 'Toronto', country: 'Canada', countryCode: 'CA', description: 'Toronto old town & city avenues' },
   { name: 'Sydney', country: 'Australia', countryCode: 'AU', description: 'Sydney circular quay & harbour lanes' },
   { name: 'Cairo', country: 'Egypt', countryCode: 'EG', description: 'Historic Islamic Cairo & Nile banks' },

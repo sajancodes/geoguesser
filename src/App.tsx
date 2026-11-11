@@ -18,6 +18,11 @@ import {
   CoverageAndIngestionDrawer,
   type CoverageRegistryEntry,
 } from './components/CoverageAndIngestionDrawer';
+import {
+  getCoverageRegistry,
+  createGameSession,
+  submitGuess,
+} from './packages/game-logic/clientGameService';
 import type { DecodedGaussianSplatCloud } from './packages/splat-renderer/splatBinary';
 
 type AppShellState = 'title' | 'playing' | 'paused' | 'gameover';
@@ -75,36 +80,19 @@ export default function App() {
     return () => window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
   }, []);
 
-  // Fetch Coverage Registry and bootstrap initial live 3D background scene on mount
+  // Fetch Coverage Registry serverlessly on mount
   useEffect(() => {
-    let cancelled = false;
-    async function loadInitialCoverageAndBootstrap() {
-      try {
-        const covRes = await fetch('/api/coverage');
-        if (covRes.ok) {
-          const covData = (await covRes.json()) as {
-            eligibleCount: number;
-            locations: CoverageRegistryEntry[];
-          };
-          if (!cancelled) {
-            setCoverageEntries(covData.locations);
-            setEligibleCount(covData.eligibleCount);
-          }
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setErrorBanner(
-            err instanceof Error
-              ? `Unable to initialize world service: ${err.message}`
-              : 'World service initialization failed.'
-          );
-        }
-      }
+    try {
+      const covData = getCoverageRegistry();
+      setCoverageEntries(covData.locations);
+      setEligibleCount(covData.eligibleCount);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error
+          ? `Unable to initialize coverage registry: ${err.message}`
+          : 'Coverage registry initialization failed.'
+      );
     }
-    loadInitialCoverageAndBootstrap();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   // Initialize the 3D WorldEngineController once on mount
@@ -142,6 +130,7 @@ export default function App() {
   }, []);
 
   // Start or advance a game round
+  // Start or advance a game round (100% serverless in-browser session)
   const startRoundSession = useCallback(
     async (options: {
       mode: GameModeId;
@@ -156,26 +145,17 @@ export default function App() {
       setErrorBanner(null);
 
       try {
-        const res = await fetch('/api/game/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: options.mode,
-            countryFilter: options.countryFilter !== undefined ? options.countryFilter : null,
-            cityFilter: options.cityFilter !== undefined ? options.cityFilter : null,
-            seedCode: options.mode === 'duel_seed' ? seedCode : null,
-            locationId: options.specificLocationId ?? null,
-            roundNumber: options.roundNumber,
-            totalRounds: options.totalRounds,
-            recentLocationIds: options.resetCumulative ? [] : recentLocationIds,
-          }),
+        const nextRound = createGameSession({
+          mode: options.mode,
+          countryFilter: options.countryFilter !== undefined ? options.countryFilter : null,
+          cityFilter: options.cityFilter !== undefined ? options.cityFilter : null,
+          seedCode: options.mode === 'duel_seed' ? seedCode : null,
+          locationId: options.specificLocationId ?? null,
+          roundNumber: options.roundNumber,
+          totalRounds: options.totalRounds,
+          recentLocationIds: options.resetCumulative ? [] : recentLocationIds,
         });
 
-        if (!res.ok) {
-          throw new Error(`Session endpoint returned HTTP ${res.status}`);
-        }
-
-        const nextRound = (await res.json()) as GameRoundPublicState;
         setRoundState(nextRound);
         setGuessCoord(null);
         setRoundResult(null);
@@ -253,7 +233,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onTitleKeyDown);
   }, [handleStartFromTitle, isCoverageDrawerOpen, shellState]);
 
-  // Submit guess to server-authoritative geodesic scoring endpoint
+  // Submit guess to client-authoritative geodesic scoring endpoint (100% serverless)
   const handleSubmitGuess = useCallback(
     async (overrideCoord?: { lat: number; lon: number }) => {
       if (!roundState || isSubmittingGuess) return;
@@ -263,29 +243,16 @@ export default function App() {
       setErrorBanner(null);
 
       try {
-        const res = await fetch('/api/game/guess', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: roundState.sessionId,
-            guessLat: coordToSubmit.lat,
-            guessLon: coordToSubmit.lon,
-            elapsedSeconds:
-              roundState.timeLimitSeconds !== null && remainingSeconds !== null
-                ? roundState.timeLimitSeconds - remainingSeconds
-                : 0,
-          }),
+        const evalRes = submitGuess({
+          sessionId: roundState.sessionId,
+          guessLat: coordToSubmit.lat,
+          guessLon: coordToSubmit.lon,
+          elapsedSeconds:
+            roundState.timeLimitSeconds !== null && remainingSeconds !== null
+              ? roundState.timeLimitSeconds - remainingSeconds
+              : 0,
         });
 
-        if (res.status === 429) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-
-        if (!res.ok) {
-          throw new Error(`Scoring service returned HTTP ${res.status}`);
-        }
-
-        const evalRes = (await res.json()) as GuessEvaluationResult;
         setRoundResult(evalRes);
         setCumulativeScore((prev) => prev + evalRes.score);
         setRecentLocationIds((prev) => [...prev, evalRes.locationId]);

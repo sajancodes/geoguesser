@@ -1,6 +1,10 @@
 import type { GuessEvaluationResult, LocationCoverageRecord } from '../shared-types';
 import { computeGeodesicInverse } from '../geographic-index/coordinates';
 import { getEligiblePlayableLocations } from '../coverage/coverageDatabase';
+import {
+  ALL_WORLD_COUNTRIES,
+  createLocationFromCountry,
+} from '../coverage/worldCountries';
 
 export const MAX_ROUND_SCORE = 5000;
 export const DEFAULT_GLOBAL_DIFFICULTY_K_KM = 2000;
@@ -78,6 +82,24 @@ export function selectFairPlayableLocation(
 ): LocationCoverageRecord {
   const eligible = getEligiblePlayableLocations(countryCodeFilter ?? null, cityNameFilter ?? null);
   if (eligible.length === 0) {
+    if (countryCodeFilter && countryCodeFilter.trim().length > 0) {
+      const q = countryCodeFilter.trim().toLowerCase();
+      const match = ALL_WORLD_COUNTRIES.find(
+        (c) => c.code.toLowerCase() === q || c.name.toLowerCase() === q
+      );
+      if (match) {
+        return createLocationFromCountry(match);
+      }
+    }
+    if (cityNameFilter && cityNameFilter.trim().length > 0) {
+      const q = cityNameFilter.trim().toLowerCase();
+      const match = ALL_WORLD_COUNTRIES.find(
+        (c) => c.cityName.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
+      );
+      if (match) {
+        return createLocationFromCountry(match);
+      }
+    }
     const fallback = getEligiblePlayableLocations(null, null);
     return fallback[0];
   }

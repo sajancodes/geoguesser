@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ArrowRight, Compass, Cpu, RotateCcw } from 'lucide-react';
 import type { GuessEvaluationResult } from '../packages/shared-types';
 import { WorldGuessMap } from './WorldGuessMap';
+import { analyzeGeospatial } from '../packages/game-logic/clientGameService';
 
 export interface RoundResultsModalProps {
   result: GuessEvaluationResult;
@@ -30,23 +31,15 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
     setIsAnalyzing(true);
     setAnalysisError(null);
     try {
-      const res = await fetch('/api/geospatial/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          locationId: result.locationId,
-          guessLat: result.guessWGS84.lat,
-          guessLon: result.guessWGS84.lon,
-        }),
-      });
-      const data = (await res.json()) as { analysis?: string; error?: string };
-      if (!res.ok || data.error) {
-        setAnalysisError(data.error ?? `Request failed (${res.status})`);
-      } else {
-        setAnalysisText(data.analysis ?? 'No analysis available.');
-      }
+      // 100% serverless in-browser geospatial analysis
+      const data = analyzeGeospatial(
+        result.locationId,
+        result.guessWGS84.lat,
+        result.guessWGS84.lon
+      );
+      setAnalysisText(data.analysis || 'Analysis generated successfully.');
     } catch (err) {
-      setAnalysisError(err instanceof Error ? err.message : 'Network error calling analysis API.');
+      setAnalysisError(err instanceof Error ? err.message : 'Error generating geospatial analysis.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -101,7 +94,9 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
                 {result.locationTitle}
               </div>
               <div className="text-xs text-[#9ca3af]">
-                {result.regionName}, {result.countryName}
+                {result.regionName.includes(result.countryName)
+                  ? result.regionName
+                  : `${result.regionName}, ${result.countryName}`}
               </div>
             </div>
           </div>

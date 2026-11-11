@@ -37,6 +37,7 @@ import {
   wgs84ToEnu,
 } from '../geographic-index/coordinates';
 import { ProceduralAudioSynth } from './soundSynth';
+import { getInMemoryChunkBuffer } from '../game-logic/clientGameService';
 
 export interface WorldEngineCallbacks {
   onTelemetryUpdate: (snapshot: RuntimeTelemetrySnapshot) => void;
@@ -376,12 +377,11 @@ export class WorldEngineController {
       };
 
       this.streetViewPanorama = new svLib.StreetViewPanorama(this.streetViewMountEl, {
-        position: { lat: target.lat, lng: target.lon },
         pov: { heading: target.headingDeg, pitch: target.pitchDeg },
         zoom: 1,
-        visible: true,
+        visible: false,
         addressControl: false,
-        showRoadLabels: Boolean(this.activeRound?.explorerMetadata),
+        showRoadLabels: false,
         linksControl: false,
         clickToGo: false,
         panControl: false,
@@ -390,6 +390,7 @@ export class WorldEngineController {
         enableCloseButton: false,
         motionTracking: false,
         motionTrackingControl: false,
+        sources: [svLib.StreetViewSource.OUTDOOR],
       });
 
       this.attachStreetViewListeners(this.streetViewPanorama);
@@ -496,66 +497,80 @@ export class WorldEngineController {
 
     this.streetViewPanorama.setOptions({
       addressControl: false,
-      showRoadLabels: Boolean(bootstrap.explorerMetadata),
+      showRoadLabels: false,
       linksControl: false,
       clickToGo: false,
       panControl: false,
       zoomControl: false,
       fullscreenControl: false,
       enableCloseButton: false,
+      sources: [this.streetViewLib.StreetViewSource.OUTDOOR],
     });
 
-    try {
-      const { data } = await this.streetViewService.getPanorama({
-        location: { lat: target.lat, lng: target.lon },
-        radius: 150,
-        preference: this.streetViewLib.StreetViewPreference.NEAREST,
-        source: this.streetViewLib.StreetViewSource.OUTDOOR,
-      });
-
-      if (this.isDisposed) return;
-
-      if (data.location?.pano) {
-        this.currentPanoId = data.location.pano;
-        if (data.location.latLng) {
-          this.spawnOriginWGS84 = {
-            lat: data.location.latLng.lat(),
-            lon: data.location.latLng.lng(),
-            elevation: target.elevation,
-          };
-          this.currentRealWGS84 = { ...this.spawnOriginWGS84 };
+    let outdoorData: GoogleStreetViewPanoramaData | null = null;
+    // Strictly search OUTDOOR street view only (never inside buildings)
+    for (const searchRadius of [300, 1000, 3000, 8000]) {
+      try {
+        const res = await this.streetViewService.getPanorama({
+          location: { lat: target.lat, lng: target.lon },
+          radius: searchRadius,
+          preference: this.streetViewLib.StreetViewPreference.NEAREST,
+          source: this.streetViewLib.StreetViewSource.OUTDOOR,
+        });
+        if (res?.data?.location?.pano) {
+          outdoorData = res.data;
+          break;
         }
+      } catch {
+        // try next radius
+      }
+    }
 
-        let alignedHeading = target.headingDeg;
-        if (data.links && data.links.length > 0) {
-          const validLinks = data.links.filter(
-            (l): l is GoogleStreetViewLink => l !== null && typeof l.heading === 'number'
-          );
-          if (validLinks.length > 0) {
-            this.currentLinks = validLinks;
-            let bestDiff = 360;
-            for (const link of validLinks) {
-              const linkHdg = link.heading ?? 0;
-              let diff = Math.abs((((linkHdg - target.headingDeg) % 360) + 540) % 360 - 180);
-              if (diff < bestDiff) {
-                bestDiff = diff;
-                alignedHeading = linkHdg;
-              }
+    if (this.isDisposed) return;
+
+    if (outdoorData?.location?.pano) {
+      this.currentPanoId = outdoorData.location.pano;
+      if (outdoorData.location.latLng) {
+        this.spawnOriginWGS84 = {
+          lat: outdoorData.location.latLng.lat(),
+          lon: outdoorData.location.latLng.lng(),
+          elevation: target.elevation,
+        };
+        this.currentRealWGS84 = { ...this.spawnOriginWGS84 };
+      }
+
+      let alignedHeading = target.headingDeg;
+      if (outdoorData.links && outdoorData.links.length > 0) {
+        const validLinks = outdoorData.links.filter(
+          (l): l is GoogleStreetViewLink => l !== null && typeof l.heading === 'number'
+        );
+        if (validLinks.length > 0) {
+          this.currentLinks = validLinks;
+          let bestDiff = 360;
+          for (const link of validLinks) {
+            const linkHdg = link.heading ?? 0;
+            let diff = Math.abs((((linkHdg - target.headingDeg) % 360) + 540) % 360 - 180);
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              alignedHeading = linkHdg;
             }
           }
         }
-
-        this.capsule.yawRad = (alignedHeading * Math.PI) / 180;
-        this.streetViewPanorama.setPano(data.location.pano);
-        this.streetViewPanorama.setPov({
-          heading: alignedHeading,
-          pitch: target.pitchDeg,
-        });
-        this.streetViewPanorama.setZoom(this.active3DMode === 'google_photorealistic_3d' ? 0.35 : 1);
-        this.streetViewPanorama.setVisible(true);
       }
-    } catch {
-      if (this.isDisposed) return;
+
+      this.capsule.yawRad = (alignedHeading * Math.PI) / 180;
+      this.streetViewPanorama.setPano(outdoorData.location.pano);
+      this.streetViewPanorama.setPov({
+        heading: alignedHeading,
+        pitch: target.pitchDeg,
+      });
+      this.streetViewPanorama.setZoom(this.active3DMode === 'google_photorealistic_3d' ? 0.35 : 1);
+      this.streetViewPanorama.setVisible(true);
+    } else {
+      // In cases where Google has zero outdoor coverage in radius, enforce OUTDOOR source
+      this.streetViewPanorama.setOptions({
+        sources: [this.streetViewLib.StreetViewSource.OUTDOOR],
+      });
       this.streetViewPanorama.setPosition({ lat: target.lat, lng: target.lon });
       this.streetViewPanorama.setPov({
         heading: target.headingDeg,
@@ -1104,16 +1119,39 @@ export class WorldEngineController {
     const startMs = performance.now();
 
     try {
-      const response = await fetch(descriptor.assetManifest.splatUrl, {
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      let uint8Payload: Uint8Array | null = getInMemoryChunkBuffer(descriptor.chunkId);
+      if (!uint8Payload && descriptor.assetManifest.splatUrl.startsWith('blob:')) {
+        try {
+          const response = await fetch(descriptor.assetManifest.splatUrl, {
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            const arrayBuf = await response.arrayBuffer();
+            uint8Payload = new Uint8Array(arrayBuf);
+          }
+        } catch {
+          // ignore blob fetch abort/cleanup
+        }
       }
-      const arrayBuf = await response.arrayBuffer();
-      if (this.isDisposed || controller.signal.aborted) return;
 
-      const decoded = decodeSplatBinaryBuffer(new Uint8Array(arrayBuf));
+      if (!uint8Payload && !descriptor.assetManifest.splatUrl.startsWith('/inmemory/')) {
+        try {
+          const response = await fetch(descriptor.assetManifest.splatUrl, {
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            const arrayBuf = await response.arrayBuffer();
+            uint8Payload = new Uint8Array(arrayBuf);
+          }
+        } catch {
+          // offline/serverless host fallback
+        }
+      }
+
+      if (this.isDisposed || controller.signal.aborted) return;
+      if (!uint8Payload) return;
+
+      const decoded = decodeSplatBinaryBuffer(uint8Payload);
       if (!decoded.valid || !decoded.cloud) {
         throw new Error(decoded.error ?? 'Invalid splat payload');
       }
