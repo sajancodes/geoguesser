@@ -300,7 +300,7 @@ export const GameplayHudOverlay: React.FC<GameplayHudOverlayProps> = ({
                 <h2 className="text-sm font-semibold text-[#f3f4f6]">Exploration Paused</h2>
               </div>
               <span className="font-mono text-xs text-[#9ca3af]">
-                ROUND {roundState.roundNumber}/{roundState.totalRounds}
+                PLACE #{roundState.roundNumber}
               </span>
             </div>
 

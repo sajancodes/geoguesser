@@ -25,8 +25,6 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  const isFinalRound = result.roundNumber >= totalRounds;
-
   const handleRequestHighThinkingAnalysis = async () => {
     setIsAnalyzing(true);
     setAnalysisError(null);
@@ -58,7 +56,7 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Compass className="w-4 h-4 text-[#0284c7]" strokeWidth={1.75} />
             <h2 className="text-sm font-semibold text-[#f3f4f6]">
-              Round {result.roundNumber} of {totalRounds} — Geodesic Verification Report
+              Place #{result.roundNumber} — Geodesic Verification Report
             </h2>
           </div>
           <span className="font-mono text-xs text-[#9ca3af]">
@@ -70,7 +68,7 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
           {/* Primary Tabular Numerals Readout */}
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-[#262a30] border border-[#262a30] bg-[#181b1f] rounded-[4px]">
             <div className="p-3.5">
-              <div className="text-[11px] font-semibold uppercase text-[#9ca3af]">Round Score</div>
+              <div className="text-[11px] font-semibold uppercase text-[#9ca3af]">Place Score</div>
               <div className="text-2xl font-semibold font-mono tabular-nums text-[#f3f4f6] mt-0.5">
                 {result.score.toLocaleString()}{' '}
                 <span className="text-xs font-normal text-[#9ca3af]">/ {result.maxScore}</span>
@@ -188,7 +186,7 @@ export const RoundResultsModal: React.FC<RoundResultsModalProps> = ({
             }}
             className="flex items-center gap-2 px-4 py-2 bg-[#0284c7] hover:bg-[#0369a1] text-[#f3f4f6] text-xs font-semibold rounded-[4px] cursor-pointer"
           >
-            <span>{isFinalRound ? 'Start New 5-Round Survey' : `Advance to Round ${result.roundNumber + 1}`}</span>
+            <span>Next Place</span>
             <ArrowRight className="w-4 h-4" strokeWidth={1.75} />
           </button>
         </div>

@@ -47,11 +47,31 @@ test('Serverless clientGameService creates session, buffers chunks, and evaluate
   assert.ok(analysis.analysis.length > 10);
 });
 
-test('Serverless clientGameService handles arbitrary 200+ world countries', () => {
+test('Serverless clientGameService handles arbitrary 200+ world countries and stays in Nepal on Next Place', () => {
   const session = createGameSession({
     countryFilter: 'IS', // Iceland
     mode: 'classic',
   });
   assert.ok(session.sessionId);
   assert.ok(session.sceneBootstrap.chunks.length > 0);
+
+  // Verify multiple consecutive Next Place sessions in Nepal stay inside Nepal
+  const recentIds: string[] = [];
+  for (let place = 1; place <= 6; place++) {
+    const nepalSession = createGameSession({
+      countryFilter: 'NP',
+      mode: 'classic',
+      roundNumber: place,
+      totalRounds: Math.max(5, place),
+      recentLocationIds: recentIds,
+    });
+    const res = submitGuess({
+      sessionId: nepalSession.sessionId,
+      guessLat: 28.21,
+      guessLon: 83.95,
+    });
+    assert.equal(res.countryName, 'Nepal');
+    assert.equal(recentIds.includes(res.locationId), false);
+    recentIds.push(res.locationId);
+  }
 });

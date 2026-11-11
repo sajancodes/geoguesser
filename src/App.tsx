@@ -466,12 +466,14 @@ export default function App() {
           cumulativeScore={cumulativeScore}
           quotaExceeded={gmpQuotaExceeded}
           onNextRound={() => {
-            const isFinal = roundResult.roundNumber >= roundState.totalRounds;
             startRoundSession({
               mode: roundState.mode,
-              roundNumber: isFinal ? 1 : roundResult.roundNumber + 1,
-              totalRounds: roundState.totalRounds,
-              resetCumulative: isFinal,
+              roundNumber: roundResult.roundNumber + 1,
+              totalRounds: Math.max(roundState.totalRounds, roundResult.roundNumber + 1),
+              resetCumulative: false,
+              cityFilter: selectionType === 'city' ? selectedCity : null,
+              countryFilter: selectionType === 'country' ? selectedCountryCode : null,
+              specificLocationId: null,
             });
           }}
           onReturnToTitle={() => {

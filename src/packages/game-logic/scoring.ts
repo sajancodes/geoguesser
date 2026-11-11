@@ -115,7 +115,28 @@ export function selectFairPlayableLocation(
   }
 
   const unvisited = eligible.filter((loc) => !recentLocationIds.includes(loc.locationId));
-  const pool = unvisited.length > 0 ? unvisited : eligible;
-  const index = Math.floor(Math.random() * pool.length);
-  return pool[index];
+  if (unvisited.length > 0) {
+    const index = Math.floor(Math.random() * unvisited.length);
+    return unvisited[index];
+  }
+
+  // If all predefined sectors in this country/city were already visited in this session,
+  // generate a fresh outdoor sector within the same country/city so Next Place never repeats or leaves the country
+  const base = eligible[Math.floor(Math.random() * eligible.length)];
+  const latOffset = (Math.random() - 0.5) * 0.035;
+  const lonOffset = (Math.random() - 0.5) * 0.035;
+  const newYaw = Math.floor(Math.random() * 360);
+  return {
+    ...base,
+    locationId: `${base.locationId}-place-${recentLocationIds.length + 1}`,
+    originWGS84: {
+      lat: Number((base.originWGS84.lat + latOffset).toFixed(5)),
+      lon: Number((base.originWGS84.lon + lonOffset).toFixed(5)),
+      elevation: base.originWGS84.elevation,
+    },
+    spawnPointENU: {
+      ...base.spawnPointENU,
+      yawDeg: newYaw,
+    },
+  };
 }
