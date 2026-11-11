@@ -38,6 +38,13 @@ import {
 } from '../geographic-index/coordinates';
 import { ProceduralAudioSynth } from './soundSynth';
 import { getInMemoryChunkBuffer } from '../game-logic/clientGameService';
+import {
+  buildCompositeBuildingGroup,
+  buildRoadNetworkGroup,
+  buildStreetPropGroup,
+  buildStreetSignGroup,
+  createSurfaceMicroReliefTexture,
+} from '../rendering/proceduralMaterials';
 
 export interface WorldEngineCallbacks {
   onTelemetryUpdate: (snapshot: RuntimeTelemetrySnapshot) => void;
@@ -87,6 +94,7 @@ interface GoogleStreetViewPanoramaInstance {
   setVisible: (visible: boolean) => void;
   getVisible: () => boolean;
   getLinks: () => Array<GoogleStreetViewLink | null> | null | undefined;
+  getStatus?: () => string;
   setOptions: (options: Record<string, unknown>) => void;
   addListener: (eventName: string, handler: () => void) => GoogleMapsEventListener;
 }
@@ -213,6 +221,12 @@ export class WorldEngineController {
   private splatWorldGroup: THREE.Group;
   private corridorDisposables: Array<{ dispose: () => void }> = [];
 
+  // Procedural 3D World Fallback Group & Lighting (instant fallback when Street View is loading or unavailable)
+  private proceduralWorldGroup: THREE.Group;
+  private proceduralDisposables: Array<{ dispose: () => void }> = [];
+  private dirSunLight: THREE.DirectionalLight;
+  private hemiAmbientLight: THREE.HemisphereLight;
+
   // Capsule first-person state & input state
   private capsule: CapsuleState = {
     east: 0,
@@ -338,7 +352,19 @@ export class WorldEngineController {
     this.depthCorridorGroup.name = 'streetview-3d-depth-corridor';
     this.splatWorldGroup = new THREE.Group();
     this.splatWorldGroup.name = 'layer-a-gaussian-splats';
-    this.scene.add(this.depthCorridorGroup, this.splatWorldGroup);
+    this.proceduralWorldGroup = new THREE.Group();
+    this.proceduralWorldGroup.name = 'procedural-3d-world';
+
+    this.dirSunLight = new THREE.DirectionalLight(0xfff8ee, 1.4);
+    this.hemiAmbientLight = new THREE.HemisphereLight(0x93c5fd, 0x475569, 0.85);
+
+    this.scene.add(
+      this.depthCorridorGroup,
+      this.splatWorldGroup,
+      this.proceduralWorldGroup,
+      this.dirSunLight,
+      this.hemiAmbientLight
+    );
 
     this.bindEventListeners();
     void this.initGoogleStreetViewAnd3DMap();
@@ -347,7 +373,7 @@ export class WorldEngineController {
 
   private async initGoogleStreetViewAnd3DMap(): Promise<void> {
     const win = window as unknown as WindowWithGoogleMaps;
-    for (let attempt = 0; attempt < 90; attempt++) {
+    for (let attempt = 0; attempt < 15; attempt++) {
       if (this.isDisposed) return;
       if (typeof win.google?.maps?.importLibrary === 'function') {
         break;
@@ -479,13 +505,28 @@ export class WorldEngineController {
       this.rebuild3DStreetDepthCorridor();
     });
 
-    this.streetViewListeners.push(panoChanged, posChanged, povChanged, linksChanged);
+    const statusChanged = pano.addListener('status_changed', () => {
+      const status = pano.getStatus?.();
+      if (status && status !== 'OK') {
+        this.streetViewMountEl.style.display = 'none';
+        this.proceduralWorldGroup.visible = true;
+      } else if (status === 'OK') {
+        this.streetViewMountEl.style.display = 'block';
+        this.proceduralWorldGroup.visible = false;
+      }
+    });
+
+    this.streetViewListeners.push(panoChanged, posChanged, povChanged, linksChanged, statusChanged);
   }
 
   private async resolveAndMoveToStreetViewTarget(
     bootstrap: GameRoundPublicState['sceneBootstrap']
   ): Promise<void> {
-    if (!this.streetViewPanorama || !this.streetViewService || !this.streetViewLib) return;
+    if (!this.streetViewPanorama || !this.streetViewService || !this.streetViewLib) {
+      this.streetViewMountEl.style.display = 'none';
+      this.proceduralWorldGroup.visible = true;
+      return;
+    }
 
     const target = bootstrap.streetViewTarget;
     this.spawnOriginWGS84 = {
@@ -566,17 +607,12 @@ export class WorldEngineController {
       });
       this.streetViewPanorama.setZoom(this.active3DMode === 'google_photorealistic_3d' ? 0.35 : 1);
       this.streetViewPanorama.setVisible(true);
+      this.streetViewMountEl.style.display = 'block';
+      this.proceduralWorldGroup.visible = false;
     } else {
-      // In cases where Google has zero outdoor coverage in radius, enforce OUTDOOR source
-      this.streetViewPanorama.setOptions({
-        sources: [this.streetViewLib.StreetViewSource.OUTDOOR],
-      });
-      this.streetViewPanorama.setPosition({ lat: target.lat, lng: target.lon });
-      this.streetViewPanorama.setPov({
-        heading: target.headingDeg,
-        pitch: target.pitchDeg,
-      });
-      this.streetViewPanorama.setVisible(true);
+      // In cases where Google has zero outdoor coverage in radius, cleanly fall back to procedural 3D world
+      this.streetViewMountEl.style.display = 'none';
+      this.proceduralWorldGroup.visible = true;
     }
 
     this.rebuild3DStreetDepthCorridor();
@@ -976,10 +1012,121 @@ export class WorldEngineController {
       collidingWithId: null,
     };
 
+    // Always build the Procedural 3D World first so the viewport renders immediately with zero blank screen!
+    this.buildProcedural3DWorld(bootstrap);
+
     void this.resolveAndMoveToStreetViewTarget(bootstrap);
 
     this.initialLoadTimeMs = Math.round(performance.now() - t0);
     this.updateDynamicChunkStreaming(true);
+  }
+
+  /**
+   * Constructs the full Procedural 3D World (Sky, Ground, Buildings, Roads, Signs, Props, Lighting)
+   * which renders immediately and serves as seamless fallback when Street View is loading or unavailable.
+   */
+  private buildProcedural3DWorld(bootstrap: GameRoundPublicState['sceneBootstrap']): void {
+    while (this.proceduralWorldGroup.children.length > 0) {
+      this.proceduralWorldGroup.remove(this.proceduralWorldGroup.children[0]);
+    }
+    for (const item of this.proceduralDisposables) {
+      item.dispose();
+    }
+    this.proceduralDisposables = [];
+
+    const profile = PERFORMANCE_PROFILES[this.activeProfileId];
+    const enableShadows = profile.enableShadows;
+    const reliefTex = createSurfaceMicroReliefTexture('asphalt', this.capabilities.maxAnisotropy);
+    this.proceduralDisposables.push(reliefTex);
+
+    // 1. Celestial Sky Dome with location horizon/zenith coloring
+    const skyGeo = new THREE.SphereGeometry(240, 24, 16);
+    const skyMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(bootstrap.skyHorizonHex || '#9bbcd8'),
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    this.proceduralDisposables.push(skyGeo, skyMat);
+    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+    this.proceduralWorldGroup.add(skyMesh);
+
+    // 2. Ground Plane
+    const groundGeo = new THREE.PlaneGeometry(350, 350);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(bootstrap.groundTintHex || '#57534e'),
+      roughness: 0.9,
+      metalness: 0.05,
+      bumpMap: reliefTex,
+      bumpScale: 0.02,
+    });
+    this.proceduralDisposables.push(groundGeo, groundMat);
+    const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+    groundMesh.rotation.x = -Math.PI / 2;
+    groundMesh.position.y = -0.01;
+    groundMesh.receiveShadow = enableShadows;
+    this.proceduralWorldGroup.add(groundMesh);
+
+    // 3. Sun & Ambient Lighting
+    const azRad = (bootstrap.sunAzimuthDeg * Math.PI) / 180;
+    const elRad = Math.max(0.1, (bootstrap.sunElevationDeg * Math.PI) / 180);
+    const sunDist = 120;
+    this.dirSunLight.position.set(
+      sunDist * Math.cos(elRad) * Math.sin(azRad),
+      sunDist * Math.sin(elRad),
+      -sunDist * Math.cos(elRad) * Math.cos(azRad)
+    );
+    this.hemiAmbientLight.color.set(bootstrap.skyHorizonHex || '#9bbcd8');
+    this.hemiAmbientLight.groundColor.set(bootstrap.groundTintHex || '#57534e');
+
+    // 4. Roads with asphalt and lane stripes
+    if (bootstrap.roads && bootstrap.roads.length > 0) {
+      const roadGroup = buildRoadNetworkGroup(
+        bootstrap.roads,
+        reliefTex,
+        enableShadows,
+        this.proceduralDisposables
+      );
+      this.proceduralWorldGroup.add(roadGroup);
+    }
+
+    // 5. Procedural 3D Buildings with styled roofs & facades
+    if (bootstrap.buildings && bootstrap.buildings.length > 0) {
+      for (const bld of bootstrap.buildings) {
+        const bldGroup = buildCompositeBuildingGroup(
+          bld,
+          reliefTex,
+          enableShadows,
+          this.proceduralDisposables
+        );
+        this.proceduralWorldGroup.add(bldGroup);
+      }
+    }
+
+    // 6. Street Props (Lamps, Bollards, Planters)
+    if (bootstrap.props && bootstrap.props.length > 0) {
+      for (const prop of bootstrap.props) {
+        const propGroup = buildStreetPropGroup(
+          prop,
+          this.proceduralDisposables
+        );
+        this.proceduralWorldGroup.add(propGroup);
+      }
+    }
+
+    // 7. Street Signs & Navigational Clues
+    if (bootstrap.signs && bootstrap.signs.length > 0) {
+      for (const sign of bootstrap.signs) {
+        const signGroup = buildStreetSignGroup(
+          sign,
+          this.capabilities.maxAnisotropy,
+          this.proceduralDisposables
+        );
+        this.proceduralWorldGroup.add(signGroup);
+      }
+    }
+
+    // Always visible by default
+    this.proceduralWorldGroup.visible = true;
   }
 
   /**
@@ -1287,9 +1434,9 @@ export class WorldEngineController {
         },
         dtSec,
         this.allowMovement,
-        [],
-        [],
-        []
+        this.activeRound.buildings || [],
+        this.activeRound.props || [],
+        this.activeRound.roads || []
       );
       this.pendingYawDeltaRad = 0;
       this.pendingPitchDeltaRad = 0;
@@ -1581,6 +1728,14 @@ export class WorldEngineController {
       item.dispose();
     }
     this.corridorDisposables = [];
+
+    while (this.proceduralWorldGroup.children.length > 0) {
+      this.proceduralWorldGroup.remove(this.proceduralWorldGroup.children[0]);
+    }
+    for (const item of this.proceduralDisposables) {
+      item.dispose();
+    }
+    this.proceduralDisposables = [];
   }
 
   public dispose(): void {

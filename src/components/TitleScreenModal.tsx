@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MapPin, Globe, Play, Sparkles, Database, Check, Search, X } from 'lucide-react';
+import { MapPin, Globe, Play, Sparkles, Database, Check, Search, X, Key } from 'lucide-react';
 import { ALL_WORLD_COUNTRIES } from '../packages/coverage/worldCountries';
 
 export type SelectionType = 'city' | 'country' | 'random';
@@ -57,6 +57,8 @@ export interface TitleScreenModalProps {
   isStarting: boolean;
   onStartGame: () => void;
   onOpenCoverageDrawer?: () => void;
+  onOpenKeyModal?: () => void;
+  hasGoogleMapsKey?: boolean;
 }
 
 export const TitleScreenModal: React.FC<TitleScreenModalProps> = ({
@@ -69,6 +71,8 @@ export const TitleScreenModal: React.FC<TitleScreenModalProps> = ({
   isStarting,
   onStartGame,
   onOpenCoverageDrawer,
+  onOpenKeyModal,
+  hasGoogleMapsKey = false,
 }) => {
   const [countrySearchQuery, setCountrySearchQuery] = useState('');
   const [citySearchQuery, setCitySearchQuery] = useState('');
@@ -149,17 +153,31 @@ export const TitleScreenModal: React.FC<TitleScreenModalProps> = ({
             </div>
           </div>
 
-          {onOpenCoverageDrawer && (
-            <button
-              type="button"
-              onClick={onOpenCoverageDrawer}
-              title="Coverage Registry"
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#9ca3af] hover:text-[#f3f4f6] rounded-[4px] cursor-pointer transition-colors"
-            >
-              <Database className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
-              <span>Coverage</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {onOpenKeyModal && (
+              <button
+                type="button"
+                onClick={onOpenKeyModal}
+                title="Google Maps API Key (Optional for live Street View tiles)"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#9ca3af] hover:text-[#f3f4f6] rounded-[4px] cursor-pointer transition-colors"
+              >
+                <Key className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
+                <span className="hidden sm:inline">{hasGoogleMapsKey ? 'Maps Key Active' : 'Maps Key'}</span>
+              </button>
+            )}
+
+            {onOpenCoverageDrawer && (
+              <button
+                type="button"
+                onClick={onOpenCoverageDrawer}
+                title="Coverage Registry"
+                className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs border border-[#262a30] bg-[#181b1f] hover:border-[#0284c7] text-[#9ca3af] hover:text-[#f3f4f6] rounded-[4px] cursor-pointer transition-colors"
+              >
+                <Database className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
+                <span>Coverage</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Selection Category Tabs: City vs Country vs Anywhere */}

@@ -2,9 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Map as GoogleMap,
   AdvancedMarker,
+  useMap,
   type MapMouseEvent,
 } from '@vis.gl/react-google-maps';
-import { Crosshair, Globe, MapPin } from 'lucide-react';
+import { Check, Crosshair, Globe, MapPin, Search, X } from 'lucide-react';
+import { searchWorldPlaces, type SearchPlaceItem } from '../packages/coverage/searchGazetteer';
 
 export interface WorldGuessMapProps {
   guessCoord: { lat: number; lon: number } | null;
@@ -15,19 +17,21 @@ export interface WorldGuessMapProps {
   heightClass?: string;
 }
 
-const REFERENCE_ANCHORS: Array<{ label: string; lat: number; lon: number }> = [
-  { label: 'Kyoto, JP', lat: 34.998582, lon: 135.780895 },
-  { label: 'Reykjavik, IS', lat: 64.142665, lon: -21.928412 },
-  { label: 'Valparaiso, CL', lat: -33.041635, lon: -71.627345 },
-  { label: 'Marrakech, MA', lat: 31.62482, lon: -7.99218 },
-  { label: 'Paris, FR', lat: 48.85942, lon: 2.29978 },
-  { label: 'New York, US', lat: 40.70328, lon: -73.98962 },
-];
+function MapPanController({ panTarget }: { panTarget: { lat: number; lng: number } | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (map && panTarget) {
+      map.panTo(panTarget);
+      map.setZoom(5);
+    }
+  }, [map, panTarget]);
+  return null;
+}
 
 /**
  * Interactive World Guess Map combining @vis.gl/react-google-maps (`AdvancedMarker`)
- * and a synchronized deterministic WGS84 Geodesic Projection Plotter so coordinate pinning
- * works both with live Google Maps tiles and in offline/headless environments.
+ * and a synchronized deterministic WGS84 Geodesic Projection Plotter with instant search
+ * across all 200+ countries, capitals, and major world cities.
  */
 export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
   guessCoord,
@@ -37,18 +41,65 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
   quotaExceeded,
   heightClass = 'h-56',
 }) => {
-  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
-  const hasGoogleMapsKey = Boolean(apiKey && apiKey.trim().length > 0 && !quotaExceeded);
+  const apiKey = (
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
+    (typeof window !== 'undefined' ? localStorage.getItem('earth_uncovered_gmp_key') : '') ||
+    ''
+  ).trim();
+  const hasGoogleMapsKey = Boolean(apiKey && apiKey.length > 0 && !quotaExceeded);
   const [mapEngineMode, setMapEngineMode] = useState<'google' | 'geodesic_grid'>(
     hasGoogleMapsKey ? 'google' : 'geodesic_grid'
   );
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [pinnedLabel, setPinnedLabel] = useState<string | null>(null);
+  const [panTarget, setPanTarget] = useState<{ lat: number; lng: number } | null>(null);
+
+  const searchResults = searchWorldPlaces(searchQuery, 7);
 
   useEffect(() => {
     if (quotaExceeded) {
       setMapEngineMode('geodesic_grid');
     }
   }, [quotaExceeded]);
+
+  // Handle place selection from search
+  const handleSelectPlace = (item: SearchPlaceItem) => {
+    onSelectGuessCoord(item.lat, item.lon);
+    setPanTarget({ lat: item.lat, lng: item.lon });
+    setPinnedLabel(`${item.name} (${item.lat.toFixed(2)}°, ${item.lon.toFixed(2)}°)`);
+    setSearchQuery(item.name);
+    setShowSuggestions(false);
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        setHighlightedIndex((prev) => (prev + 1) % searchResults.length);
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        setHighlightedIndex((prev) => (prev - 1 + searchResults.length) % searchResults.length);
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        const idx =
+          highlightedIndex >= 0 && highlightedIndex < searchResults.length
+            ? highlightedIndex
+            : 0;
+        handleSelectPlace(searchResults[idx]);
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+    }
+  };
 
   // Draw the WGS84 Geodesic Coordinate Plotter whenever in geodesic_grid mode or when coords update
   useEffect(() => {
@@ -171,6 +222,7 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
     const normY = Math.max(0, Math.min(1, (e.clientY - rect.top) / Math.max(1, rect.height)));
     const lon = Number((normX * 360 - 180).toFixed(4));
     const lat = Number((90 - normY * 180).toFixed(4));
+    setPinnedLabel(null);
     onSelectGuessCoord(lat, lon);
   };
 
@@ -178,22 +230,24 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
     if (readOnly) return;
     const latLng = e.detail.latLng;
     if (latLng) {
+      setPinnedLabel(null);
       onSelectGuessCoord(Number(latLng.lat.toFixed(4)), Number(latLng.lng.toFixed(4)));
     }
   };
 
   return (
     <div className="flex flex-col border border-[#262a30] bg-[#181b1f] rounded-[4px] overflow-hidden">
+      {/* Top Header */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#262a30] bg-[#111315] text-xs">
         <div className="flex items-center gap-2 text-[#f3f4f6] font-semibold">
           <Globe className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
           <span>WGS84 Target Selection Map</span>
           {guessCoord ? (
-            <span className="font-mono text-[#9ca3af] ml-1">
+            <span className="font-mono text-[#0284c7] font-semibold ml-1">
               {guessCoord.lat.toFixed(4)}°, {guessCoord.lon.toFixed(4)}°
             </span>
           ) : (
-            <span className="text-[#9ca3af] font-normal ml-1">Click map to place marker</span>
+            <span className="text-[#9ca3af] font-normal ml-1">Click map or search below to pick</span>
           )}
         </div>
 
@@ -212,6 +266,88 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
         </div>
       </div>
 
+      {/* Instant Search Bar on Map for Easy Picking */}
+      {!readOnly && (
+        <div className="relative border-b border-[#262a30] bg-[#14171a] p-2">
+          <div className="relative flex items-center">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9ca3af] pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setShowSuggestions(true);
+                setHighlightedIndex(0);
+              }}
+              onFocus={() => {
+                if (searchQuery.trim().length > 0) setShowSuggestions(true);
+              }}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Search country, capital, city or place to pin (e.g. Nepal, France, Tokyo, Canada...)"
+              className="w-full pl-8 pr-7 py-1.5 bg-[#181b1f] border border-[#262a30] focus:border-[#0284c7] rounded-[4px] text-xs text-[#f3f4f6] placeholder-[#6b7280] outline-none"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setShowSuggestions(false);
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#9ca3af] hover:text-[#f3f4f6] p-0.5 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Autocomplete Dropdown */}
+          {showSuggestions && searchResults.length > 0 && (
+            <div className="absolute left-2 right-2 top-full mt-1 z-50 bg-[#181b1f] border border-[#262a30] rounded-[4px] shadow-2xl max-h-52 overflow-y-auto">
+              {searchResults.map((item, idx) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectPlace(item)}
+                  className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between border-b border-[#262a30]/60 hover:bg-[#202732] cursor-pointer transition-colors ${
+                    idx === highlightedIndex ? 'bg-[#1b2533] text-[#0284c7]' : 'text-[#f3f4f6]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <MapPin className="w-3.5 h-3.5 text-[#0284c7] shrink-0" />
+                    <div>
+                      <span className="font-semibold text-[#f3f4f6]">{item.name}</span>
+                      <span className="text-[11px] text-[#9ca3af] ml-1.5">
+                        {item.type === 'country' ? `[${item.countryCode}]` : `(${item.country})`}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="font-mono text-[10px] text-[#9ca3af] shrink-0">
+                    {item.lat.toFixed(2)}°, {item.lon.toFixed(2)}°
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {pinnedLabel && (
+            <div className="mt-1.5 flex items-center justify-between text-[11px] text-[#0284c7] font-mono px-0.5">
+              <span className="flex items-center gap-1">
+                <Check className="w-3 h-3 text-[#16a34a]" strokeWidth={3} />
+                <span>Pinned: <strong>{pinnedLabel}</strong></span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setPinnedLabel(null)}
+                className="text-[10px] text-[#9ca3af] hover:text-[#f3f4f6] underline cursor-pointer"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Map Viewport */}
       <div className={`relative w-full ${heightClass} bg-[#111315]`}>
         {mapEngineMode === 'google' && hasGoogleMapsKey ? (
           <GoogleMap
@@ -228,16 +364,17 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
             onClick={handleGoogleMapClick}
             style={{ width: '100%', height: '100%' }}
           >
+            <MapPanController panTarget={panTarget} />
             {guessCoord && (
               <AdvancedMarker position={{ lat: guessCoord.lat, lng: guessCoord.lon }}>
-                <div className="px-1.5 py-0.5 bg-[#0284c7] text-[#f3f4f6] text-[10px] font-mono font-semibold border border-[#f3f4f6] rounded-[4px]">
+                <div className="px-1.5 py-0.5 bg-[#0284c7] text-[#f3f4f6] text-[10px] font-mono font-semibold border border-[#f3f4f6] rounded-[4px] shadow-lg">
                   GUESS
                 </div>
               </AdvancedMarker>
             )}
             {actualCoord && (
               <AdvancedMarker position={{ lat: actualCoord.lat, lng: actualCoord.lon }}>
-                <div className="px-1.5 py-0.5 bg-[#16a34a] text-[#f3f4f6] text-[10px] font-mono font-semibold border border-[#f3f4f6] rounded-[4px]">
+                <div className="px-1.5 py-0.5 bg-[#16a34a] text-[#f3f4f6] text-[10px] font-mono font-semibold border border-[#f3f4f6] rounded-[4px] shadow-lg">
                   ACTUAL
                 </div>
               </AdvancedMarker>
@@ -259,7 +396,7 @@ export const WorldGuessMap: React.FC<WorldGuessMapProps> = ({
         <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-t border-[#262a30] bg-[#111315] text-[11px] text-[#9ca3af]">
           <div className="flex items-center gap-1.5">
             <Crosshair className="w-3.5 h-3.5 text-[#0284c7]" strokeWidth={1.75} />
-            <span>Click map to place your deduction pin</span>
+            <span>Search above or click map to place deduction pin</span>
           </div>
           {guessCoord ? (
             <span className="font-mono text-[#0284c7] font-semibold">
